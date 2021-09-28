@@ -19,11 +19,13 @@ package daemon
 import (
 	"context"
 	"net"
+	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
 	"github.com/scionproto/scion/go/lib/daemon/internal/metrics"
+	"github.com/scionproto/scion/go/lib/drkey"
 	libmetrics "github.com/scionproto/scion/go/lib/metrics"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/snet"
@@ -80,6 +82,9 @@ type Connector interface {
 	SVCInfo(ctx context.Context, svcTypes []addr.HostSVC) (map[addr.HostSVC]string, error)
 	// RevNotification sends a RevocationInfo message to the daemon.
 	RevNotification(ctx context.Context, revInfo *path_mgmt.RevInfo) error
+	// DRKeyGetLvl2Key sends a DRKey Lvl2Key request to SCIOND
+	DRKeyGetLvl2Key(ctx context.Context, meta drkey.Lvl2Meta,
+		valTime time.Time) (drkey.Lvl2Key, error)
 	// Close shuts down the connection to the daemon.
 	Close(ctx context.Context) error
 }

@@ -79,6 +79,8 @@ type NetworkConfig struct {
 type QUICStack struct {
 	Listener       *squic.ConnListener
 	Dialer         *squic.ConnDialer
+	TLSListener    *squic.ConnListener
+	TLSDialer      *squic.ConnDialer
 	RedirectCloser func()
 }
 
@@ -94,7 +96,7 @@ func (nc *NetworkConfig) QUICStack() (*QUICStack, error) {
 	if nc.QUIC.Address == "" {
 		nc.QUIC.Address = net.JoinHostPort(nc.Public.IP.String(), "0")
 	}
-	client, server, err := nc.initQUICSockets()
+	client, server, err := nc.initQUICSockets(false)
 	if err != nil {
 		return nil, err
 	}
@@ -110,7 +112,26 @@ func (nc *NetworkConfig) QUICStack() (*QUICStack, error) {
 		return nil, serrors.WrapStr("listening QUIC/SCION", err)
 	}
 
-	cancel, err := nc.initSvcRedirect(server.LocalAddr().String())
+	//TLS/QUIC part
+	// Calling initQUICSockets again will fail if nc.QUIC.Address has a port other than 0.
+	// As a workaround, forcefully set the port to 0 via a parameter.
+	tlsClient, tlsServer, err := nc.initQUICSockets(true)
+	if err != nil {
+		return nil, err
+	}
+	log.Info("TLS/QUIC server conn initialized", "local_addr", tlsServer.LocalAddr())
+	log.Info("TLS/QUIC client conn initialized", "local_addr", tlsClient.LocalAddr())
+
+	tlsQuicConfig, err := GenerateTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	tlsListener, err := quic.Listen(tlsServer, tlsQuicConfig, nil)
+	if err != nil {
+		return nil, serrors.WrapStr("listening TLS/QUIC/SCION", err)
+	}
+
+	cancel, err := nc.initSvcRedirect(server.LocalAddr().String(), tlsServer.LocalAddr().String())
 	if err != nil {
 		return nil, serrors.WrapStr("starting service redirection", err)
 	}
@@ -120,6 +141,11 @@ func (nc *NetworkConfig) QUICStack() (*QUICStack, error) {
 		Dialer: &squic.ConnDialer{
 			Conn:      client,
 			TLSConfig: tlsConfig,
+		},
+		TLSListener: squic.NewConnListener(tlsListener),
+		TLSDialer: &squic.ConnDialer{
+			Conn:      tlsClient,
+			TLSConfig: tlsQuicConfig,
 		},
 		RedirectCloser: cancel,
 	}, nil
@@ -198,10 +224,11 @@ func (nc *NetworkConfig) AddressRewriter(
 // initSvcRedirect creates the main control-plane UDP socket. SVC anycasts will be
 // delivered to this socket, which replies to SVC resolution requests. The
 // address will be included as the QUIC address in SVC resolution replies.
-func (nc *NetworkConfig) initSvcRedirect(quicAddress string) (func(), error) {
+func (nc *NetworkConfig) initSvcRedirect(quicAddress string, tlsQUICAdress string) (func(), error) {
 	reply := &svc.Reply{
 		Transports: map[svc.Transport]string{
-			svc.QUIC: quicAddress,
+			svc.QUIC:    quicAddress,
+			svc.TLSQUIC: tlsQUICAdress,
 		},
 	}
 
@@ -249,7 +276,7 @@ func (nc *NetworkConfig) initSvcRedirect(quicAddress string) (func(), error) {
 	return cancel, nil
 }
 
-func (nc *NetworkConfig) initQUICSockets() (net.PacketConn, net.PacketConn, error) {
+func (nc *NetworkConfig) initQUICSockets(ignorePort bool) (net.PacketConn, net.PacketConn, error) {
 	dispatcherService := reliable.NewDispatcher("")
 	if nc.ReconnectToDispatcher {
 		dispatcherService = reconnect.NewDispatcherService(dispatcherService)
@@ -268,6 +295,9 @@ func (nc *NetworkConfig) initQUICSockets() (net.PacketConn, net.PacketConn, erro
 	serverAddr, err := net.ResolveUDPAddr("udp", nc.QUIC.Address)
 	if err != nil {
 		return nil, nil, serrors.WrapStr("parsing server QUIC address", err)
+	}
+	if ignorePort {
+		serverAddr.Port = 0
 	}
 	server, err := serverNet.Listen(context.Background(), "udp", serverAddr, addr.SvcNone)
 	if err != nil {

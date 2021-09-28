@@ -25,6 +25,7 @@ import (
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
 	"github.com/scionproto/scion/go/lib/daemon"
+	"github.com/scionproto/scion/go/lib/drkey"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/snet"
 	snetpath "github.com/scionproto/scion/go/lib/snet/path"
@@ -182,6 +183,11 @@ func (c connector) SVCInfo(ctx context.Context,
 func (c connector) RevNotification(ctx context.Context,
 	revInfo *path_mgmt.RevInfo) error {
 
+	panic("not implemented")
+}
+
+func (c connector) DRKeyGetLvl2Key(ctx context.Context, meta drkey.Lvl2Meta,
+	valTime time.Time) (drkey.Lvl2Key, error) {
 	panic("not implemented")
 }
 

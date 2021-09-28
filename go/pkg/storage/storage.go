@@ -24,6 +24,8 @@ import (
 	"github.com/scionproto/scion/go/cs/beacon"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/config"
+	"github.com/scionproto/scion/go/lib/drkey"
+	"github.com/scionproto/scion/go/lib/drkey/drkeydbsqlite"
 	"github.com/scionproto/scion/go/lib/infra/modules/cleaner"
 	"github.com/scionproto/scion/go/lib/infra/modules/db"
 	"github.com/scionproto/scion/go/lib/log"
@@ -48,6 +50,7 @@ const (
 	DefaultPath        = "/share/scion.db"
 	DefaultTrustDBPath = "/share/data/%s.trust.db"
 	DefaultPathDBPath  = "/share/cache/%s.path.db"
+	DefaultDRKeyDBPath = "/share/cache/%s.drkey.db"
 )
 
 // Default samples for various databases.
@@ -60,6 +63,9 @@ var (
 	}
 	SampleTrustDB = DBConfig{
 		Connection: DefaultTrustDBPath,
+	}
+	SampleDRKeyDB = DBConfig{
+		Connection: DefaultDRKeyDBPath,
 	}
 )
 
@@ -227,6 +233,26 @@ func NewRevocationStorage() revcache.RevCache {
 func NewTrustStorage(c DBConfig) (TrustDB, error) {
 	log.Info("Connecting TrustDB", "backend", BackendSqlite, "connection", c.Connection)
 	db, err := sqlitetrustdb.New(c.Connection)
+	if err != nil {
+		return nil, err
+	}
+	SetConnLimits(db, c)
+	return db, nil
+}
+
+func NewDRKeyLvl1Storage(c DBConfig) (drkey.Lvl1DB, error) {
+	log.Info("Connecting DRKeyDB", "	", BackendSqlite, "connection", c.Connection)
+	db, err := drkeydbsqlite.NewLvl1Backend(c.Connection)
+	if err != nil {
+		return nil, err
+	}
+	SetConnLimits(db, c)
+	return db, nil
+}
+
+func NewDRKeyLvl2Storage(c DBConfig) (drkey.Lvl2DB, error) {
+	log.Info("Connecting DRKeyDB", "	", BackendSqlite, "connection", c.Connection)
+	db, err := drkeydbsqlite.NewLvl2Backend(c.Connection)
 	if err != nil {
 		return nil, err
 	}

@@ -50,6 +50,15 @@ max_as_validity = "3d"
 mode = "in-process"
 `
 
+const drkeySample = `
+# EpochDuration of the DRKey secret value and of all derived keys. (default "24h")
+epoch_duration = "24h"
+`
+const drkeyDelegationListSample = `
+# The list of hosts authorized to get a DS per protocol.
+piskes = [ "127.0.0.1", "127.0.0.2"]
+`
+
 const serviceSample = `
 # The path to the PEM-encoded shared secret that is used to create JWT tokens.
 shared_secret = ""

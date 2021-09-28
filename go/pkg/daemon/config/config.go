@@ -44,6 +44,7 @@ type Config struct {
 	Tracing     env.Tracing        `toml:"tracing,omitempty"`
 	TrustDB     storage.DBConfig   `toml:"trust_db,omitempty"`
 	PathDB      storage.DBConfig   `toml:"path_db,omitempty"`
+	DRKeyDB     storage.DBConfig   `toml:"drkey_db,omitempty"`
 	SD          SDConfig           `toml:"sd,omitempty"`
 	TrustEngine trustengine.Config `toml:"trustengine,omitempty"`
 }
@@ -70,6 +71,7 @@ func (cfg *Config) Validate() error {
 		&cfg.Metrics,
 		&cfg.TrustDB,
 		&cfg.PathDB,
+		&cfg.DRKeyDB,
 		&cfg.SD,
 		&cfg.TrustEngine,
 	)
@@ -95,6 +97,13 @@ func (cfg *Config) Sample(dst io.Writer, path config.Path, _ config.CtxMap) {
 				fmt.Sprintf(storage.DefaultPathDBPath, "sd"),
 			),
 			"path_db",
+		),
+		config.OverrideName(
+			config.FormatData(
+				&cfg.DRKeyDB,
+				fmt.Sprintf(storage.DefaultDRKeyDBPath, "sd"),
+			),
+			"drkey_db",
 		),
 		&cfg.SD,
 		&cfg.TrustEngine,
