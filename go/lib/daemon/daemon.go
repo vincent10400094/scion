@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/colibri"
+	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
 	"github.com/scionproto/scion/go/lib/daemon/internal/metrics"
@@ -85,6 +87,17 @@ type Connector interface {
 	// DRKeyGetLvl2Key sends a DRKey Lvl2Key request to SCIOND
 	DRKeyGetLvl2Key(ctx context.Context, meta drkey.Lvl2Meta,
 		valTime time.Time) (drkey.Lvl2Key, error)
+	// ColibriListRsvs requests the list of reservations towards dstIA.
+	ColibriListRsvs(ctx context.Context, dstIA addr.IA) (*colibri.StitchableSegments, error)
+	// ColibriSetupRsv requests a COLIBRI E2E reservation stitching up to three segments.
+	// It may return an E2ESetupError.
+	ColibriSetupRsv(ctx context.Context, req *colibri.E2EReservationSetup) (snet.Path, error)
+	// ColibriCleanupRsv cleans an E2E reservation. The ID must be E2E compliant.
+	// This method may return an E2EResponseError.
+	ColibriCleanupRsv(ctx context.Context, req *reservation.ID, index reservation.IndexNumber) error
+	// ColibriAddAdmissionEntry adds an entry to the admission list. It returns the effective
+	// validity time for the entry in the list.
+	ColibriAddAdmissionEntry(ctx context.Context, entry *colibri.AdmissionEntry) (time.Time, error)
 	// Close shuts down the connection to the daemon.
 	Close(ctx context.Context) error
 }

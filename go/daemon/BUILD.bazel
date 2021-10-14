@@ -32,6 +32,7 @@ go_library(
         "//go/lib/topology:go_default_library",
         "//go/pkg/app/launcher:go_default_library",
         "//go/pkg/daemon:go_default_library",
+        "//go/pkg/daemon/colibri:go_default_library",
         "//go/pkg/daemon/config:go_default_library",
         "//go/pkg/daemon/drkey:go_default_library",
         "//go/pkg/daemon/drkey/grpc:go_default_library",

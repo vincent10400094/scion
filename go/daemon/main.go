@@ -45,6 +45,7 @@ import (
 	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/pkg/app/launcher"
 	"github.com/scionproto/scion/go/pkg/daemon"
+	"github.com/scionproto/scion/go/pkg/daemon/colibri"
 	"github.com/scionproto/scion/go/pkg/daemon/config"
 	"github.com/scionproto/scion/go/pkg/daemon/drkey"
 	dk_grpc "github.com/scionproto/scion/go/pkg/daemon/drkey/grpc"
@@ -212,6 +213,8 @@ func realMain(ctx context.Context) error {
 		RevCache:     revCache,
 		TopoProvider: itopo.Provider(),
 		DRKeyStore:   drkeyStore,
+		ColFetcher:   colibri.NewFetcher(dialer),
+		ColClient:    &colibri.DaemonClient{Dialer: dialer},
 	}))
 
 	promgrpc.Register(server)
