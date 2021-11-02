@@ -18,23 +18,22 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/spf13/viper"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/daemon"
+	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/tracing"
 	"github.com/scionproto/scion/go/pkg/app"
+	"github.com/scionproto/scion/go/pkg/app/flag"
 	colsubcmd "github.com/scionproto/scion/go/pkg/scioncolibrisubcmd"
 )
 
 func newColibri(pather CommandPather) *cobra.Command {
+	var envFlags flag.SCIONEnvironment
 	var flags struct {
-		// cfg      showpaths.Config
 		timeout  time.Duration
 		cfg      colsubcmd.Config
 		json     bool
@@ -43,17 +42,13 @@ func newColibri(pather CommandPather) *cobra.Command {
 		tracer   string
 	}
 
-	v := viper.NewWithOptions(
-		viper.EnvKeyReplacer(strings.NewReplacer("SCIOND", "DAEMON", "LOCAL", "LOCAL_ADDR")),
-	)
-
 	var cmd = &cobra.Command{
 		Use:     "colibri",
 		Short:   "Display segment reservations from local to destination AS",
 		Aliases: []string{"co"},
 		Args:    cobra.ExactArgs(1),
 		Example: fmt.Sprintf(`  %[1]s colibri 1-ff00:0:110
-  %[1]s colibri 1-ff00:0:110 --local 127.0.0.55 --json`,
+  %[1]s colibri 1-ff00:0:110 --json`,
 			pather.CommandPath()),
 		Long: `'colibri' lists available segment reservations between the local
 and the specified SCION ASes.
@@ -65,13 +60,6 @@ colibri will exit with code 1.
 On other errors, colibri will exit with code 2.
 `,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			// flags.cfg.Defaults()
-
-			v.SetEnvPrefix("scion")
-			if err := v.BindPFlags(cmd.Flags()); err != nil {
-				return serrors.WrapStr("binding flags", err)
-			}
-			v.AutomaticEnv()
 			dst, err := addr.IAFromString(args[0])
 			if err != nil {
 				return serrors.WrapStr("invalid destination ISD-AS", err)
@@ -85,9 +73,16 @@ On other errors, colibri will exit with code 2.
 			}
 			defer closer()
 
-			flags.cfg.Daemon = v.GetString("sciond")
-
 			cmd.SilenceUsage = true
+
+			if err := envFlags.LoadExternalVars(); err != nil {
+				return err
+			}
+
+			flags.cfg.Daemon = envFlags.Daemon()
+			log.Debug("Resolved SCION environment flags",
+				"daemon", flags.cfg.Daemon,
+			)
 
 			span, traceCtx := tracing.CtxWith(context.Background(), "run")
 			span.SetTag("dst.isd_as", dst)
@@ -112,8 +107,7 @@ On other errors, colibri will exit with code 2.
 		},
 	}
 
-	cmd.Flags().StringVar(&flags.cfg.Daemon, "sciond",
-		daemon.DefaultAPIAddress, "SCION Deamon address")
+	envFlags.Register(cmd.Flags())
 	cmd.Flags().DurationVar(&flags.timeout, "timeout", 5*time.Second, "Timeout")
 	cmd.Flags().IntVarP(&flags.cfg.MaxStitRsvs, "maxstitches", "t", 10,
 		"Maximum number of segment stitches that are displayed")

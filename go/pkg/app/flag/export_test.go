@@ -12,28 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// Package key defines cobra commands to manage private and public keys.
-package key
+package flag
 
-import (
-	"github.com/spf13/cobra"
-
-	"github.com/scionproto/scion/go/pkg/command"
-)
-
-// Cmd creates a new cobra command to manage keys
-func Cmd(pather command.Pather) *cobra.Command {
-	var cmd = &cobra.Command{
-		Use:   "key",
-		Short: "Manage private and public keys",
-	}
-	joined := command.Join(pather, cmd)
-
-	cmd.AddCommand(
-		NewPrivateCmd(joined),
-		NewPublicCmd(joined),
-		NewSymmetricCmd(joined),
-		newMatchCmd(joined),
-	)
-	return cmd
+func (e *SCIONEnvironment) SetFilePath(p string) {
+	e.filepath = p
 }
