@@ -71,5 +71,6 @@ message HiddenSegmentRegistrationServer {
 message ColibriServicesRequest {}
 
 message ColibriServicesResponse {
+    // The addresses of the colibri services in this AS.
     repeated string address = 1;
 }

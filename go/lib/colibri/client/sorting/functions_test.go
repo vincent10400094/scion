@@ -18,11 +18,12 @@ import (
 	"sort"
 	"testing"
 
+	"github.com/stretchr/testify/require"
+
 	rt "github.com/scionproto/scion/go/co/reservation/test"
 	"github.com/scionproto/scion/go/lib/colibri"
 	ct "github.com/scionproto/scion/go/lib/colibri/coltest"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
-	"github.com/stretchr/testify/require"
 )
 
 func TestByBW(t *testing.T) {

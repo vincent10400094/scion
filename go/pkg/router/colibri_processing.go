@@ -137,7 +137,8 @@ func (c *colibriPacketProcessor) basicValidation() (processResult, error) {
 		(isLocal == c.scionLayer.DstIA.Equal(c.d.localIA))) {
 
 		return processResult{}, serrors.New("inconsistent packet", "egress_id", c.egressInterface(),
-			"is_last_hop", c.colibriPathMinimal.IsLastHop(), "dst", c.scionLayer.DstIA, "(local)", c.d.localIA)
+			"is_last_hop", c.colibriPathMinimal.IsLastHop(), "dst", c.scionLayer.DstIA,
+			"(local)", c.d.localIA)
 	}
 	return processResult{}, nil
 }

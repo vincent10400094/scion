@@ -380,16 +380,16 @@ func keyToLvl2Resp(drkey drkey.Lvl2Key) (*sdpb.DRKeyLvl2Response, error) {
 	}, nil
 }
 
-func (s *DaemonServer) ColibriListRsvs(ctx context.Context, req *sdpb.ColibriListRequest) (
-	*sdpb.ColibriListResponse, error) {
+func (s *DaemonServer) ColibriListRsvs(ctx context.Context, req *sdpb.ColibriListRsvsRequest) (
+	*sdpb.ColibriListRsvsResponse, error) {
 
 	dstIA := addr.IAInt(req.Base.DstIa).IA()
 	log.FromCtx(ctx).Debug("fetching reservation list", "dst", dstIA.String())
 	return s.ColFetcher.ListReservations(ctx, req)
 }
 
-func (s *DaemonServer) ColibriSetupRsv(ctx context.Context, req *sdpb.ColibriSetupRequest) (
-	*sdpb.ColibriSetupResponse, error) {
+func (s *DaemonServer) ColibriSetupRsv(ctx context.Context, req *sdpb.ColibriSetupRsvRequest) (
+	*sdpb.ColibriSetupRsvResponse, error) {
 
 	res, err := s.ColClient.SetupReservation(ctx, req)
 	if err != nil {
@@ -412,14 +412,14 @@ func (s *DaemonServer) ColibriSetupRsv(ctx context.Context, req *sdpb.ColibriSet
 	return res, nil
 }
 
-func (s *DaemonServer) ColibriCleanupRsv(ctx context.Context, req *sdpb.ColibriCleanupRequest) (
-	*sdpb.ColibriCleanupResponse, error) {
+func (s *DaemonServer) ColibriCleanupRsv(ctx context.Context, req *sdpb.ColibriCleanupRsvRequest) (
+	*sdpb.ColibriCleanupRsvResponse, error) {
 
 	return s.ColClient.CleanupReservation(ctx, req)
 }
 
 func (s *DaemonServer) ColibriAddAdmissionEntry(ctx context.Context,
-	req *sdpb.ColibriAdmissionEntry) (*sdpb.ColibriAdmissionEntryResponse, error) {
+	req *sdpb.ColibriAddAdmissionEntryRequest) (*sdpb.ColibriAddAdmissionEntryResponse, error) {
 
 	return s.ColClient.ColibriAddAdmissionEntry(ctx, req)
 }

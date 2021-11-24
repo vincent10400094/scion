@@ -21,6 +21,8 @@ import (
 	"time"
 
 	"github.com/golang/mock/gomock"
+	"github.com/stretchr/testify/require"
+
 	rt "github.com/scionproto/scion/go/co/reservation/test"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri"
@@ -28,7 +30,6 @@ import (
 	ct "github.com/scionproto/scion/go/lib/colibri/coltest"
 	"github.com/scionproto/scion/go/lib/daemon/mock_daemon"
 	"github.com/scionproto/scion/go/lib/xtest"
-	"github.com/stretchr/testify/require"
 )
 
 func TestCaptureTrips(t *testing.T) {

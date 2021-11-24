@@ -81,7 +81,7 @@ func TestReservationOpen(t *testing.T) {
 	require.NoError(t, err)
 
 	// modify the global task duration for the test
-	rsv.e2eRenewalTaskDuration = reservation.TicksInE2ERsv * 4 * time.Millisecond / 2 // 16 millisecs
+	rsv.e2eRenewalTaskDuration = reservation.TicksInE2ERsv * 4 * time.Millisecond / 2 // 16ms
 
 	testPaths := []*snetpath.Path{
 		{SPath: spath.Path{Raw: xtest.MustParseHexString("01")}},
@@ -146,7 +146,7 @@ func TestReservationOpenSuccessfully(t *testing.T) {
 	rsv, err := NewReservation(ctx, daemon, srcIA, dstIA, dstHost, 11, 0, sorting.ByExpiration)
 	require.NoError(t, err)
 	// modify the global task duration for the test
-	rsv.e2eRenewalTaskDuration = reservation.TicksInE2ERsv * 4 * time.Millisecond / 2 // 16 millisecs
+	rsv.e2eRenewalTaskDuration = reservation.TicksInE2ERsv * 4 * time.Millisecond / 2 // 16ms
 
 	returnPath := &snetpath.Path{
 		SPath: spath.Path{Raw: xtest.MustParseHexString("01")},
@@ -202,7 +202,7 @@ func TestReservationFailOnRenewal(t *testing.T) {
 	require.NoError(t, err)
 
 	// modify the global task duration for the test
-	rsv.e2eRenewalTaskDuration = reservation.TicksInE2ERsv * 4 * time.Millisecond / 2 // 16 millisecs
+	rsv.e2eRenewalTaskDuration = reservation.TicksInE2ERsv * 4 * time.Millisecond / 2 // 16ms
 
 	testPaths := []*snetpath.Path{
 		{SPath: spath.Path{Raw: xtest.MustParseHexString("01")}},

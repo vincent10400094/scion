@@ -58,10 +58,10 @@ pkg_tar(
     srcs = [
         "//go/acceptance/sig_ping_acceptance",
         "//go/integration/braccept",
+        "//go/integration/colibri",
         "//go/integration/end2end",
         "//go/integration/end2end_integration",
         "//go/integration/scion_integration",
-        "//go/integration/colibri",
         "//go/lib/xtest/graphupdater",
         "//go/pktgen",
         "//go/tools/buildkite_artifacts",

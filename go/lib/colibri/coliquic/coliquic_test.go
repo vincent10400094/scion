@@ -165,10 +165,10 @@ func TestColibriGRPC(t *testing.T) {
 	// mock a method (see net_test) and check we recover the colibri path correctly
 	mctrl := gomock.NewController(t)
 	defer mctrl.Finish()
-	handler := mock_col.NewMockColibriServer(mctrl)
+	handler := mock_col.NewMockColibriServiceServer(mctrl)
 	// use SetupSegment to check that the client talks to the server as expected,
 	// and that the server is able to extract the address and path to the client.
-	handler.EXPECT().SetupSegment(gomock.Any(), gomock.Any()).Times(1).DoAndReturn(
+	handler.EXPECT().SegmentSetup(gomock.Any(), gomock.Any()).Times(1).DoAndReturn(
 		func(ctx context.Context, _ *colpb.SegmentSetupRequest) (
 			*colpb.SegmentSetupResponse, error) {
 
@@ -196,7 +196,7 @@ func TestColibriGRPC(t *testing.T) {
 
 	gRPCServer := NewGrpcServer(grpc.UnaryInterceptor(testInterceptor),
 		sgrpc.UnaryServerInterceptor())
-	colpb.RegisterColibriServer(gRPCServer, handler)
+	colpb.RegisterColibriServiceServer(gRPCServer, handler)
 
 	done := make(chan struct{})
 	go func() {
@@ -230,8 +230,8 @@ func TestColibriGRPC(t *testing.T) {
 	conn, err := grpc.DialContext(ctx, serverAddr.String(), grpc.WithInsecure(),
 		grpc.WithContextDialer(dialer))
 	require.NoError(t, err)
-	gRPCClient := colpb.NewColibriClient(conn)
-	res, err := gRPCClient.SetupSegment(ctx, &colpb.SegmentSetupRequest{})
+	gRPCClient := colpb.NewColibriServiceClient(conn)
+	res, err := gRPCClient.SegmentSetup(ctx, &colpb.SegmentSetupRequest{})
 	require.NoError(t, err)
 	require.Equal(t, clientAddr.(*snet.UDPAddr).Path.Raw, res.GetToken())
 	require.True(t, testInterceptorCalled)

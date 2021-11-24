@@ -418,11 +418,12 @@ func (s *Store) ConfirmSegmentReservation(ctx context.Context, req *base.Request
 		return failedResponse, s.errWrapStr("while finding a colibri service client", err)
 	}
 
-	pbRes, err := client.ConfirmSegmentIndex(ctx, translate.PBufRequest(req))
+	pbRes, err := client.ConfirmSegmentIndex(ctx,
+		&colpb.ConfirmSegmentIndexRequest{Base: translate.PBufRequest(req)})
 	if err != nil {
 		return failedResponse, s.errWrapStr("forwarded request failed", err)
 	}
-	return translate.Response(pbRes), nil
+	return translate.Response(pbRes.Base), nil
 }
 
 // ActivateSegmentReservation activates a segment reservation index.
@@ -490,11 +491,12 @@ func (s *Store) ActivateSegmentReservation(ctx context.Context, req *base.Reques
 		return failedResponse, s.errWrapStr("while finding a colibri service client", err)
 	}
 
-	pbRes, err := client.ActivateSegmentIndex(ctx, translate.PBufRequest(req))
+	pbRes, err := client.ActivateSegmentIndex(ctx,
+		&colpb.ActivateSegmentIndexRequest{Base: translate.PBufRequest(req)})
 	if err != nil {
 		return failedResponse, s.errWrapStr("forwarded request failed", err)
 	}
-	return translate.Response(pbRes), nil
+	return translate.Response(pbRes.Base), nil
 }
 
 // CleanupSegmentReservation deletes an index from a segment reservation.
@@ -554,11 +556,12 @@ func (s *Store) CleanupSegmentReservation(ctx context.Context, req *base.Request
 		return failedResponse, s.errWrapStr("while finding a colibri service client", err)
 	}
 
-	pbRes, err := client.CleanupSegmentIndex(ctx, translate.PBufRequest(req))
+	pbRes, err := client.CleanupSegmentIndex(ctx,
+		&colpb.CleanupSegmentIndexRequest{Base: translate.PBufRequest(req)})
 	if err != nil {
 		return failedResponse, s.errWrapStr("forwarded request failed", err)
 	}
-	return translate.Response(pbRes), nil
+	return translate.Response(pbRes.Base), nil
 }
 
 // TearDownSegmentReservation removes a whole segment reservation.
@@ -604,11 +607,12 @@ func (s *Store) TearDownSegmentReservation(ctx context.Context, req *base.Reques
 		return failedResponse, s.errWrapStr("while finding a colibri service client", err)
 	}
 
-	pbRes, err := client.TeardownSegment(ctx, translate.PBufRequest(req))
+	pbRes, err := client.TeardownSegment(ctx,
+		&colpb.TeardownSegmentRequest{Base: translate.PBufRequest(req)})
 	if err != nil {
 		return failedResponse, s.errWrapStr("forwarded request failed", err)
 	}
-	return translate.Response(pbRes), nil
+	return translate.Response(pbRes.Base), nil
 }
 
 // AdmitE2EReservation will attempt to admit an e2e reservation.
@@ -811,7 +815,7 @@ func (s *Store) AdmitE2EReservation(ctx context.Context, req *e2e.SetupReq) (
 			return nil, serrors.WrapStr("while finding a colibri service client", err)
 		}
 
-		pbRes, err := client.SetupE2E(ctx, translate.PBufE2ESetupReq(req))
+		pbRes, err := client.E2ESetup(ctx, translate.PBufE2ESetupReq(req))
 		if err != nil {
 			failedResponse.Message = s.errWrapStr("cannot forward request", err).Error()
 			return failedResponse, nil
@@ -882,7 +886,8 @@ func (s *Store) CleanupE2EReservation(ctx context.Context, req *base.Request) (
 	if rsv.Index(req.Index) != nil {
 		tx, err := s.db.BeginTransaction(ctx, nil)
 		if err != nil {
-			return failedResponse, s.errWrapStr("cannot create transaction", err, "id", req.ID.String())
+			return failedResponse, s.errWrapStr("cannot create transaction", err,
+				"id", req.ID.String())
 		}
 		defer tx.Rollback()
 		if err := rsv.RemoveIndex(req.Index); err != nil {
@@ -891,10 +896,12 @@ func (s *Store) CleanupE2EReservation(ctx context.Context, req *base.Request) (
 		}
 		if len(rsv.Indices) == 0 {
 			if err := tx.DeleteE2ERsv(ctx, &rsv.ID); err != nil {
-				return failedResponse, s.errWrapStr("cannot delete e2e reservation", err, "id", rsv.ID)
+				return failedResponse, s.errWrapStr("cannot delete e2e reservation", err,
+					"id", rsv.ID)
 			}
 		} else if err := tx.PersistE2ERsv(ctx, rsv); err != nil {
-			return failedResponse, s.errWrapStr("cannot persist e2e reservation", err, "id", req.ID.String())
+			return failedResponse, s.errWrapStr("cannot persist e2e reservation", err,
+				"id", req.ID.String())
 		}
 		if err := tx.Commit(); err != nil {
 			return failedResponse, s.errWrapStr("cannot commit transaction", err,
@@ -915,11 +922,12 @@ func (s *Store) CleanupE2EReservation(ctx context.Context, req *base.Request) (
 	if err != nil {
 		return failedResponse, s.errWrapStr("while finding a colibri service client", err)
 	}
-	pbRes, err := client.CleanupE2EIndex(ctx, translate.PBufRequest(req))
+	pbRes, err := client.CleanupE2EIndex(ctx,
+		&colpb.CleanupE2EIndexRequest{Base: translate.PBufRequest(req)})
 	if err != nil {
 		return failedResponse, s.errWrapStr("forwarded request failed", err)
 	}
-	return translate.Response(pbRes), nil
+	return translate.Response(pbRes.Base), nil
 }
 
 // DeleteExpiredIndices will just call the DB's method to delete the expired indices.
@@ -1070,7 +1078,7 @@ func (s *Store) getTokenFromDownstreamAdmission(ctx context.Context, req *segmen
 		return nil, serrors.WrapStr("while finding a colibri service client", err)
 	}
 
-	pbRes, err := client.SetupSegment(ctx, translate.PBufSetupReq(req))
+	pbRes, err := client.SegmentSetup(ctx, translate.PBufSetupReq(req))
 	if err != nil {
 		return nil, serrors.WrapStr("forwarded request failed", err)
 	}
@@ -1114,7 +1122,7 @@ func (s *Store) sendUpstreamForAdmission(ctx context.Context, req *segment.Setup
 		return failedResponse, s.errWrapStr("while finding a colibri service client", err)
 	}
 
-	pbRes, err := client.SetupSegment(ctx, translate.PBufSetupReq(req))
+	pbRes, err := client.SegmentSetup(ctx, translate.PBufSetupReq(req))
 	if err != nil {
 		return failedResponse, s.errWrapStr("forwarded request failed", err)
 	}
@@ -1179,7 +1187,7 @@ func (s *Store) obtainRsvs(ctx context.Context, src, dst addr.IA, pathType reser
 		return nil, serrors.WrapStr("dialing to list reservations from remote to remote", err,
 			"src", src.String(), "dst", dst.String())
 	}
-	res, err := client.ListReservations(ctx, &colpb.ListRequest{
+	res, err := client.ListReservations(ctx, &colpb.ListReservationsRequest{
 		DstIa:    uint64(dst.IAInt()),
 		PathType: uint32(pathType),
 	})
@@ -1209,7 +1217,8 @@ func freeInSegRsv(ctx context.Context, tx backend.Transaction, segRsv *segment.R
 		return 0, serrors.WrapStr("cannot obtain e2e reservations to compute free bw",
 			err, "segment_id", segRsv.ID)
 	}
-	freeForData := float64(segRsv.ActiveIndex().AllocBW.ToKbps()) * segRsv.TrafficSplit.SplitForData()
+	freeForData := float64(segRsv.ActiveIndex().AllocBW.ToKbps()) *
+		segRsv.TrafficSplit.SplitForData()
 	free := uint64(freeForData) - sumAllBW(rsvs)
 	return free, nil
 }

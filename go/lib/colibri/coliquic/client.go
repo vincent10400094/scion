@@ -73,7 +73,7 @@ func NewServiceClientOperator(topo *topology.Loader, router snet.Router,
 }
 
 func (o *ServiceClientOperator) DialSvcCOL(ctx context.Context, dst *addr.IA) (
-	colpb.ColibriClient, error) {
+	colpb.ColibriServiceClient, error) {
 
 	o.colServicesMutex.Lock()
 	defer o.colServicesMutex.Unlock()
@@ -93,14 +93,14 @@ func (o *ServiceClientOperator) DialSvcCOL(ctx context.Context, dst *addr.IA) (
 		log.Debug("error dialing a grpc connection", "addr", addr, "err", err)
 		return nil, err
 	}
-	return colpb.NewColibriClient(conn), nil
+	return colpb.NewColibriServiceClient(conn), nil
 }
 
 // ColibriClient finds or creates a ColibriClient that can reach the next neighbor in
 // the path passed as argument. The underneath connection will be COLIBRI or regular SCION,
 // depending on the type of the path passed as argument.
 func (o *ServiceClientOperator) ColibriClient(ctx context.Context, transp *base.TransparentPath) (
-	colpb.ColibriClient, error) {
+	colpb.ColibriServiceClient, error) {
 
 	egressID := transp.Steps[transp.CurrentStep].Egress
 	rAddr, ok := o.neighborAddr(egressID)
@@ -128,7 +128,7 @@ func (o *ServiceClientOperator) ColibriClient(ctx context.Context, transp *base.
 		log.Debug("error dialing a grpc connection", "addr", rAddr, "err", err)
 		return nil, err
 	}
-	return colpb.NewColibriClient(conn), nil
+	return colpb.NewColibriServiceClient(conn), nil
 }
 
 func (o *ServiceClientOperator) neighborAddr(egressID uint16) (*snet.UDPAddr, bool) {

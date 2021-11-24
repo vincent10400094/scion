@@ -151,8 +151,8 @@ func setupColibri(g *errgroup.Group, cfg *config.Config, cfgObjs *cfgObjs, topo 
 	}
 	colServer := coliquic.NewGrpcServer(libgrpc.UnaryServerInterceptor())
 	tcpColServer := grpc.NewServer(libgrpc.UnaryServerInterceptor())
-	colpb.RegisterColibriServer(colServer, colibriService)
-	colpb.RegisterColibriServer(tcpColServer, colibriService)
+	colpb.RegisterColibriServiceServer(colServer, colibriService)
+	colpb.RegisterColibriServiceServer(tcpColServer, colibriService)
 
 	// run inter and intra AS servers
 	g.Go(func() error {
@@ -168,7 +168,8 @@ func setupColibri(g *errgroup.Group, cfg *config.Config, cfgObjs *cfgObjs, topo 
 		return tcpColServer.Serve(tcpListener)
 	})
 
-	manager, err := colibriManager(topo, cfgObjs.stack.Router, colibriStore, cfg.Colibri.Reservations)
+	manager, err := colibriManager(topo, cfgObjs.stack.Router, colibriStore,
+		cfg.Colibri.Reservations)
 	if err != nil {
 		return nil, serrors.WrapStr("starting colibri manager", err)
 	}

@@ -147,8 +147,8 @@ func PBufResponse(res base.Response) *colpb.Response {
 	}
 }
 
-func PBufListResponse(res []*colibri.ReservationLooks) *colpb.ListResponse {
-	return &colpb.ListResponse{
+func PBufListResponse(res []*colibri.ReservationLooks) *colpb.ListReservationsResponse {
+	return &colpb.ListReservationsResponse{
 		Reservations: PBufListReservationLooks(res),
 	}
 }
@@ -164,12 +164,12 @@ func PBufStitchableResponse(res *colibri.StitchableSegments) *colpb.ListStitchab
 }
 
 func PBufListReservationLooks(
-	res []*colibri.ReservationLooks) []*colpb.ListResponse_ReservationLooks {
+	res []*colibri.ReservationLooks) []*colpb.ListReservationsResponse_ReservationLooks {
 
-	looks := make([]*colpb.ListResponse_ReservationLooks, len(res))
+	looks := make([]*colpb.ListReservationsResponse_ReservationLooks, len(res))
 	for i, l := range res {
-		looks[i] = &colpb.ListResponse_ReservationLooks{
-			ID:             PBufID(&l.Id),
+		looks[i] = &colpb.ListReservationsResponse_ReservationLooks{
+			Id:             PBufID(&l.Id),
 			SrcIa:          uint64(l.SrcIA.IAInt()),
 			DstIa:          uint64(l.DstIA.IAInt()),
 			ExpirationTime: util.TimeToSecs(l.ExpirationTime),

@@ -42,9 +42,9 @@ type ColibriService struct {
 	Store reservationstorage.Store
 }
 
-var _ colpb.ColibriServer = (*ColibriService)(nil)
+var _ colpb.ColibriServiceServer = (*ColibriService)(nil)
 
-func (s *ColibriService) SetupSegment(ctx context.Context, msg *colpb.SegmentSetupRequest) (
+func (s *ColibriService) SegmentSetup(ctx context.Context, msg *colpb.SegmentSetupRequest) (
 	*colpb.SegmentSetupResponse, error) {
 
 	msg.Base.Path.CurrentStep++
@@ -69,11 +69,11 @@ func (s *ColibriService) SetupSegment(ctx context.Context, msg *colpb.SegmentSet
 	return pbRes, nil
 }
 
-func (s *ColibriService) ConfirmSegmentIndex(ctx context.Context, msg *colpb.Request) (
-	*colpb.Response, error) {
+func (s *ColibriService) ConfirmSegmentIndex(ctx context.Context,
+	msg *colpb.ConfirmSegmentIndexRequest) (*colpb.ConfirmSegmentIndexResponse, error) {
 
-	msg.Path.CurrentStep++
-	req, err := translate.Request(msg)
+	msg.Base.Path.CurrentStep++
+	req, err := translate.Request(msg.Base)
 	if err != nil {
 		log.Error("error unmarshalling", "err", err)
 		return nil, err
@@ -85,14 +85,16 @@ func (s *ColibriService) ConfirmSegmentIndex(ctx context.Context, msg *colpb.Req
 	}
 	pbRes := translate.PBufResponse(res)
 
-	return pbRes, nil
+	return &colpb.ConfirmSegmentIndexResponse{
+		Base: pbRes,
+	}, nil
 }
 
-func (s *ColibriService) ActivateSegmentIndex(ctx context.Context, msg *colpb.Request) (
-	*colpb.Response, error) {
+func (s *ColibriService) ActivateSegmentIndex(ctx context.Context,
+	msg *colpb.ActivateSegmentIndexRequest) (*colpb.ActivateSegmentIndexResponse, error) {
 
-	msg.Path.CurrentStep++
-	req, err := translate.Request(msg)
+	msg.Base.Path.CurrentStep++
+	req, err := translate.Request(msg.Base)
 	if err != nil {
 		log.Error("error unmarshalling", "err", err)
 		return nil, err
@@ -104,14 +106,16 @@ func (s *ColibriService) ActivateSegmentIndex(ctx context.Context, msg *colpb.Re
 	}
 	pbRes := translate.PBufResponse(res)
 
-	return pbRes, nil
+	return &colpb.ActivateSegmentIndexResponse{
+		Base: pbRes,
+	}, nil
 }
 
-func (s *ColibriService) TeardownSegment(ctx context.Context, msg *colpb.Request) (
-	*colpb.Response, error) {
+func (s *ColibriService) TeardownSegment(ctx context.Context, msg *colpb.TeardownSegmentRequest) (
+	*colpb.TeardownSegmentResponse, error) {
 
-	msg.Path.CurrentStep++
-	req, err := translate.Request(msg)
+	msg.Base.Path.CurrentStep++
+	req, err := translate.Request(msg.Base)
 	if err != nil {
 		log.Error("error unmarshalling", "err", err)
 		return nil, err
@@ -123,14 +127,16 @@ func (s *ColibriService) TeardownSegment(ctx context.Context, msg *colpb.Request
 	}
 	pbRes := translate.PBufResponse(res)
 
-	return pbRes, nil
+	return &colpb.TeardownSegmentResponse{
+		Base: pbRes,
+	}, nil
 }
 
-func (s *ColibriService) CleanupSegmentIndex(ctx context.Context, msg *colpb.Request) (
-	*colpb.Response, error) {
+func (s *ColibriService) CleanupSegmentIndex(ctx context.Context,
+	msg *colpb.CleanupSegmentIndexRequest) (*colpb.CleanupSegmentIndexResponse, error) {
 
-	msg.Path.CurrentStep++
-	req, err := translate.Request(msg)
+	msg.Base.Path.CurrentStep++
+	req, err := translate.Request(msg.Base)
 	if err != nil {
 		log.Error("error unmarshalling", "err", err)
 		return nil, err
@@ -142,24 +148,26 @@ func (s *ColibriService) CleanupSegmentIndex(ctx context.Context, msg *colpb.Req
 	}
 	pbRes := translate.PBufResponse(res)
 
-	return pbRes, nil
+	return &colpb.CleanupSegmentIndexResponse{
+		Base: pbRes,
+	}, nil
 }
 
-func (s *ColibriService) ListReservations(ctx context.Context, msg *colpb.ListRequest) (
-	*colpb.ListResponse, error) {
+func (s *ColibriService) ListReservations(ctx context.Context, msg *colpb.ListReservationsRequest) (
+	*colpb.ListReservationsResponse, error) {
 
 	dstIA := addr.IAInt(msg.DstIa).IA()
 	looks, err := s.Store.ListReservations(ctx, dstIA, reservation.PathType(msg.PathType))
 	if err != nil {
 		log.Error("colibri store while listing rsvs", "err", err)
-		return &colpb.ListResponse{
+		return &colpb.ListReservationsResponse{
 			ErrorMessage: err.Error(),
 		}, nil
 	}
 	return translate.PBufListResponse(looks), nil
 }
 
-func (s *ColibriService) SetupE2E(ctx context.Context, msg *colpb.E2ESetupRequest) (
+func (s *ColibriService) E2ESetup(ctx context.Context, msg *colpb.E2ESetupRequest) (
 	*colpb.E2ESetupResponse, error) {
 
 	msg.Base.Path.CurrentStep++
@@ -176,11 +184,11 @@ func (s *ColibriService) SetupE2E(ctx context.Context, msg *colpb.E2ESetupReques
 	return translate.PBufE2ESetupResponse(res), nil
 }
 
-func (s *ColibriService) CleanupE2EIndex(ctx context.Context, msg *colpb.Request) (
-	*colpb.Response, error) {
+func (s *ColibriService) CleanupE2EIndex(ctx context.Context, msg *colpb.CleanupE2EIndexRequest) (
+	*colpb.CleanupE2EIndexResponse, error) {
 
-	msg.Path.CurrentStep++
-	req, err := translate.Request(msg)
+	msg.Base.Path.CurrentStep++
+	req, err := translate.Request(msg.Base)
 	if err != nil {
 		log.Error("error unmarshalling", "err", err)
 		return nil, err
@@ -192,7 +200,9 @@ func (s *ColibriService) CleanupE2EIndex(ctx context.Context, msg *colpb.Request
 	}
 	pbRes := translate.PBufResponse(res)
 
-	return pbRes, nil
+	return &colpb.CleanupE2EIndexResponse{
+		Base: pbRes,
+	}, nil
 }
 
 func (s *ColibriService) ListStitchables(ctx context.Context, msg *colpb.ListStitchablesRequest) (
@@ -214,8 +224,8 @@ func (s *ColibriService) ListStitchables(ctx context.Context, msg *colpb.ListSti
 }
 
 // SetupReservation serves the intra AS clients, setting up or renewing an E2E reservation.
-func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.DaemonSetupRequest) (
-	*colpb.DaemonSetupResponse, error) {
+func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.SetupReservationRequest) (
+	*colpb.SetupReservationResponse, error) {
 
 	clientAddr, err := checkLocalCaller(ctx)
 	if err != nil {
@@ -259,22 +269,22 @@ func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.Daemon
 			}
 			failedStep = uint32(failure.FailedStep)
 		}
-		return &colpb.DaemonSetupResponse{
-			Failure: &colpb.DaemonSetupResponse_Failure{
+		return &colpb.SetupReservationResponse{
+			Failure: &colpb.SetupReservationResponse_Failure{
 				ErrorMessage: err.Error(),
 				FailedStep:   failedStep,
 				AllocTrail:   trail,
 			},
 		}, nil
 	}
-	pbMsg := &colpb.DaemonSetupResponse{}
+	pbMsg := &colpb.SetupReservationResponse{}
 	switch res := res.(type) {
 	case *e2e.SetupResponseFailure:
 		trail := make([]uint32, len(res.AllocTrail))
 		for i, b := range res.AllocTrail {
 			trail[i] = uint32(b)
 		}
-		pbMsg.Failure = &colpb.DaemonSetupResponse_Failure{
+		pbMsg.Failure = &colpb.SetupReservationResponse_Failure{
 			ErrorMessage: res.Message,
 			FailedStep:   uint32(res.FailedStep),
 			AllocTrail:   trail,
@@ -295,7 +305,7 @@ func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.Daemon
 			return nil, serrors.WrapStr("serializing a colibri path in colibri service", err)
 		}
 		// nexthop holds the interface id until the daemon resolves it with the topology
-		pbMsg.Success = &colpb.DaemonSetupResponse_Success{
+		pbMsg.Success = &colpb.SetupReservationResponse_Success{
 			Spath:   rawPath,
 			NextHop: egressId,
 		}
@@ -304,8 +314,8 @@ func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.Daemon
 }
 
 // CleanupReservation serves the intra AS clients, cleaning an E2E reservation.
-func (s *ColibriService) CleanupReservation(ctx context.Context, msg *colpb.DaemonCleanupRequest) (
-	*colpb.DaemonCleanupResponse, error) {
+func (s *ColibriService) CleanupReservation(ctx context.Context,
+	msg *colpb.CleanupReservationRequest) (*colpb.CleanupReservationResponse, error) {
 
 	if _, err := checkLocalCaller(ctx); err != nil {
 		return nil, err
@@ -324,18 +334,18 @@ func (s *ColibriService) CleanupReservation(ctx context.Context, msg *colpb.Daem
 		if failure, ok := res.(*base.ResponseFailure); ok {
 			failedStep = uint32(failure.FailedStep)
 		}
-		return &colpb.DaemonCleanupResponse{
-			Failure: &colpb.DaemonCleanupResponse_Failure{
+		return &colpb.CleanupReservationResponse{
+			Failure: &colpb.CleanupReservationResponse_Failure{
 				ErrorMessage: err.Error(),
 				FailedStep:   uint32(failedStep),
 			},
 		}, nil
 	}
-	return &colpb.DaemonCleanupResponse{}, nil
+	return &colpb.CleanupReservationResponse{}, nil
 }
 
 func (s *ColibriService) AddAdmissionEntry(ctx context.Context,
-	req *colpb.DaemonAdmissionEntry) (*colpb.DaemonAdmissionEntryResponse, error) {
+	req *colpb.AddAdmissionEntryRequest) (*colpb.AddAdmissionEntryResponse, error) {
 
 	clientAddr, err := checkLocalCaller(ctx)
 	if err != nil {
@@ -365,7 +375,7 @@ func (s *ColibriService) AddAdmissionEntry(ctx context.Context,
 		AcceptAdmission: req.Accept,
 	}
 	validUntil, err := s.Store.AddAdmissionEntry(ctx, entry)
-	return &colpb.DaemonAdmissionEntryResponse{
+	return &colpb.AddAdmissionEntryResponse{
 		ValidUntil: util.TimeToSecs(validUntil),
 	}, err
 }

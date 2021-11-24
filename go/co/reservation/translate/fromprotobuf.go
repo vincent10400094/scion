@@ -191,17 +191,17 @@ func StitchableSegments(msg *colpb.ListStitchablesResponse) (*colibri.Stitchable
 	}, nil
 }
 
-func ListResponse(msg *colpb.ListResponse) ([]*colibri.ReservationLooks, error) {
+func ListResponse(msg *colpb.ListReservationsResponse) ([]*colibri.ReservationLooks, error) {
 	return ReservationLooks(msg.Reservations)
 }
 
-func ReservationLooks(msg []*colpb.ListResponse_ReservationLooks) (
+func ReservationLooks(msg []*colpb.ListReservationsResponse_ReservationLooks) (
 	[]*colibri.ReservationLooks, error) {
 
 	res := make([]*colibri.ReservationLooks, len(msg))
 	for i, l := range msg {
 		res[i] = &colibri.ReservationLooks{
-			Id:             *ID(l.ID),
+			Id:             *ID(l.Id),
 			SrcIA:          addr.IAInt(l.SrcIa).IA(),
 			DstIA:          addr.IAInt(l.DstIa).IA(),
 			ExpirationTime: util.SecsToTime(l.ExpirationTime),

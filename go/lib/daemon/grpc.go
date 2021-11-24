@@ -192,7 +192,7 @@ func (c grpcConn) DRKeyGetLvl2Key(ctx context.Context, meta drkey.Lvl2Meta,
 func (c grpcConn) ColibriListRsvs(ctx context.Context, dstIA addr.IA) (
 	*col.StitchableSegments, error) {
 
-	req := &sdpb.ColibriListRequest{
+	req := &sdpb.ColibriListRsvsRequest{
 		Base: &colpb.ListStitchablesRequest{
 			DstIa: uint64(dstIA.IAInt()),
 		},
@@ -220,8 +220,8 @@ func (c grpcConn) ColibriSetupRsv(ctx context.Context, req *col.E2EReservationSe
 	for i, r := range req.Segments {
 		pbSegs[i] = translate.PBufID(&r)
 	}
-	pbReq := &sdpb.ColibriSetupRequest{
-		Base: &colpb.DaemonSetupRequest{
+	pbReq := &sdpb.ColibriSetupRsvRequest{
+		Base: &colpb.SetupReservationRequest{
 			Id:          translate.PBufID(&req.Id),
 			SrcIa:       uint64(req.SrcIA.IAInt()),
 			DstIa:       uint64(req.DstIA.IAInt()),
@@ -271,8 +271,8 @@ func (c grpcConn) ColibriCleanupRsv(ctx context.Context, id *reservation.ID,
 	if !id.IsE2EID() {
 		return serrors.New("this id is not for an E2E reservation")
 	}
-	pbReq := &sdpb.ColibriCleanupRequest{
-		Base: &colpb.DaemonCleanupRequest{
+	pbReq := &sdpb.ColibriCleanupRsvRequest{
+		Base: &colpb.CleanupReservationRequest{
 			Id:    translate.PBufID(id),
 			Index: uint32(idx),
 		},
@@ -293,8 +293,8 @@ func (c grpcConn) ColibriCleanupRsv(ctx context.Context, id *reservation.ID,
 
 func (c grpcConn) ColibriAddAdmissionEntry(ctx context.Context, entry *col.AdmissionEntry) (
 	time.Time, error) {
-	req := &sdpb.ColibriAdmissionEntry{
-		Base: &colpb.DaemonAdmissionEntry{
+	req := &sdpb.ColibriAddAdmissionEntryRequest{
+		Base: &colpb.AddAdmissionEntryRequest{
 			DstHost:    entry.DstHost,
 			ValidUntil: util.TimeToSecs(entry.ValidUntil),
 			RegexpIa:   entry.RegexpIA,

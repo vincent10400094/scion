@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/mattn/go-sqlite3"
+
 	"github.com/scionproto/scion/go/co/reservation/e2e"
 	"github.com/scionproto/scion/go/co/reservation/segment"
 	"github.com/scionproto/scion/go/co/reservationstorage/backend"

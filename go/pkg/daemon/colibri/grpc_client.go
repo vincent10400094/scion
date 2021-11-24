@@ -31,8 +31,8 @@ type DaemonClient struct {
 }
 
 // SetupReservation will dial to the intra AS colibri service to setup an e2e reservation.
-func (c *DaemonClient) SetupReservation(ctx context.Context, req *sdpb.ColibriSetupRequest) (
-	*sdpb.ColibriSetupResponse, error) {
+func (c *DaemonClient) SetupReservation(ctx context.Context, req *sdpb.ColibriSetupRsvRequest) (
+	*sdpb.ColibriSetupRsvResponse, error) {
 
 	if req == nil {
 		return nil, serrors.New("bad nil request")
@@ -42,13 +42,13 @@ func (c *DaemonClient) SetupReservation(ctx context.Context, req *sdpb.ColibriSe
 	if err != nil {
 		return nil, err
 	}
-	client := colpb.NewColibriClient(conn) // TODO(juagargi) cache the client
+	client := colpb.NewColibriServiceClient(conn) // TODO(juagargi) cache the client
 	response, err := client.SetupReservation(ctx, req.Base)
-	return &sdpb.ColibriSetupResponse{Base: response}, err
+	return &sdpb.ColibriSetupRsvResponse{Base: response}, err
 }
 
-func (c *DaemonClient) CleanupReservation(ctx context.Context, req *sdpb.ColibriCleanupRequest) (
-	*sdpb.ColibriCleanupResponse, error) {
+func (c *DaemonClient) CleanupReservation(ctx context.Context, req *sdpb.ColibriCleanupRsvRequest) (
+	*sdpb.ColibriCleanupRsvResponse, error) {
 
 	if req == nil {
 		return nil, serrors.New("bad nil request")
@@ -58,13 +58,13 @@ func (c *DaemonClient) CleanupReservation(ctx context.Context, req *sdpb.Colibri
 	if err != nil {
 		return nil, err
 	}
-	client := colpb.NewColibriClient(conn) // TODO(juagargi) cache the client
+	client := colpb.NewColibriServiceClient(conn) // TODO(juagargi) cache the client
 	response, err := client.CleanupReservation(ctx, req.Base)
-	return &sdpb.ColibriCleanupResponse{Base: response}, err
+	return &sdpb.ColibriCleanupRsvResponse{Base: response}, err
 }
 
 func (c *DaemonClient) ColibriAddAdmissionEntry(ctx context.Context,
-	req *sdpb.ColibriAdmissionEntry) (*sdpb.ColibriAdmissionEntryResponse, error) {
+	req *sdpb.ColibriAddAdmissionEntryRequest) (*sdpb.ColibriAddAdmissionEntryResponse, error) {
 
 	if req == nil {
 		return nil, serrors.New("bad nil request")
@@ -73,7 +73,7 @@ func (c *DaemonClient) ColibriAddAdmissionEntry(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
-	client := colpb.NewColibriClient(conn) // TODO(juagargi) cache the client
+	client := colpb.NewColibriServiceClient(conn) // TODO(juagargi) cache the client
 	res, err := client.AddAdmissionEntry(ctx, req.Base)
-	return &sdpb.ColibriAdmissionEntryResponse{Base: res}, err
+	return &sdpb.ColibriAddAdmissionEntryResponse{Base: res}, err
 }

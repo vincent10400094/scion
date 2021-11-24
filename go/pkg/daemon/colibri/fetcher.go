@@ -19,18 +19,19 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
+
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/pkg/grpc"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 	sdpb "github.com/scionproto/scion/go/pkg/proto/daemon"
-	"golang.org/x/sync/singleflight"
 )
 
 type Fetcher interface {
-	ListReservations(ctx context.Context, req *sdpb.ColibriListRequest) (
-		*sdpb.ColibriListResponse, error)
+	ListReservations(ctx context.Context, req *sdpb.ColibriListRsvsRequest) (
+		*sdpb.ColibriListRsvsResponse, error)
 }
 
 func NewFetcher(dialer grpc.Dialer) Fetcher {
@@ -58,8 +59,8 @@ type defaultFetcher struct {
 // list cannot be found inside the cache.
 // The entry is kept alive and fresh for `rsvLifeDuration`, and every time a new query
 // to the same dstIA is made, the life of the listing is reset.
-func (f *defaultFetcher) ListReservations(ctx context.Context, req *sdpb.ColibriListRequest) (
-	*sdpb.ColibriListResponse, error) {
+func (f *defaultFetcher) ListReservations(ctx context.Context, req *sdpb.ColibriListRsvsRequest) (
+	*sdpb.ColibriListRsvsResponse, error) {
 
 	if req == nil {
 		return nil, serrors.New("bad nil request")
@@ -67,11 +68,11 @@ func (f *defaultFetcher) ListReservations(ctx context.Context, req *sdpb.Colibri
 	return f.listReservations(ctx, req)
 }
 
-func (f *defaultFetcher) listReservations(ctx context.Context, req *sdpb.ColibriListRequest) (
-	*sdpb.ColibriListResponse, error) {
+func (f *defaultFetcher) listReservations(ctx context.Context, req *sdpb.ColibriListRsvsRequest) (
+	*sdpb.ColibriListRsvsResponse, error) {
 
 	dstIA := addr.IAInt(req.Base.DstIa).IA()
-	f.shepperd(dstIA, req)
+	f.sheperd(dstIA, req)
 
 	if res, ok := f.cache.ListReservations(ctx, dstIA); ok {
 		return res, nil
@@ -80,7 +81,7 @@ func (f *defaultFetcher) listReservations(ctx context.Context, req *sdpb.Colibri
 }
 
 func (f *defaultFetcher) fetch(ctx context.Context, dstIA addr.IA, dedup *singleflight.Group,
-	req *sdpb.ColibriListRequest) (*sdpb.ColibriListResponse, error) {
+	req *sdpb.ColibriListRsvsRequest) (*sdpb.ColibriListRsvsResponse, error) {
 
 	r, err, _ := dedup.Do(dstIA.String(), func() (interface{}, error) {
 		log.Debug("fetching list of stitchables", "dst", dstIA.String())
@@ -88,18 +89,18 @@ func (f *defaultFetcher) fetch(ctx context.Context, dstIA addr.IA, dedup *single
 		if err != nil {
 			return nil, err
 		}
-		client := colpb.NewColibriClient(conn) // TODO(juagargi) cache the client
+		client := colpb.NewColibriServiceClient(conn) // TODO(juagargi) cache the client
 		response, err := client.ListStitchables(ctx, req.Base)
-		return &sdpb.ColibriListResponse{Base: response}, err
+		return &sdpb.ColibriListRsvsResponse{Base: response}, err
 	})
-	response, _ := r.(*sdpb.ColibriListResponse)
+	response, _ := r.(*sdpb.ColibriListRsvsResponse)
 	return response, err
 }
 
-// shepperd will take care of the listing for this destination, for a period of time.
-// It checks in the cache the existance of the listing or creates it. It keeps updating it for
+// sheperd will take care of the listing for this destination, for a period of time.
+// It checks in the cache the existence of the listing or creates it. It keeps updating it for
 // a while, specified by waitDuration and maxUpdateDuration.
-func (f *defaultFetcher) shepperd(dstIA addr.IA, req *sdpb.ColibriListRequest) {
+func (f *defaultFetcher) sheperd(dstIA addr.IA, req *sdpb.ColibriListRsvsRequest) {
 	e, found := f.cache.FindOrCreate(dstIA)
 	if found {
 		// there exists a possibility of being here without e being actually inside the cache,
@@ -143,7 +144,7 @@ type rsvCache struct {
 // ListReservations returns the list of reservations and a boolean indicating whether the
 // cache had them or not.
 func (c *rsvCache) ListReservations(ctx context.Context, dstIA addr.IA) (
-	*sdpb.ColibriListResponse, bool) {
+	*sdpb.ColibriListRsvsResponse, bool) {
 
 	c.m.Lock()
 	defer c.m.Unlock()
@@ -180,5 +181,5 @@ func (c *rsvCache) DeleteEntry(dstIA addr.IA) {
 
 type entry struct {
 	added    time.Time
-	response *sdpb.ColibriListResponse
+	response *sdpb.ColibriListRsvsResponse
 }

@@ -47,7 +47,9 @@ from python.topology.prometheus import (
     CO_PROM_PORT,
 )
 
-DEFAULT_COLIBRI_TOTAL_BW = 1000
+# 1000000 Kbps = 1Gbps . This is enough to pass the integration test
+# with all local topologies, wide.topo included, at bwclass=13 .
+DEFAULT_COLIBRI_TOTAL_BW = 1000000
 
 
 class GoGenArgs(ArgsTopoDicts):
@@ -165,7 +167,7 @@ class GoGenerator(object):
                 'delta': 0.3,
                 'capacities': os.path.join(base, 'capacities.json'),
                 'reservations': os.path.join(base, 'reservations.json'),
-                'db':{
+                'db': {
                     'connection': os.path.join(self.db_dir, '%s.reservation.db' % name),
                 },
             },
@@ -179,6 +181,7 @@ class GoGenerator(object):
         topo = self.args.topo_dicts[ia]
         if_ids = {iface for br in topo['border_routers'].values() for iface in br['interfaces']}
         if_ids.add(0)
+
         caps = {
             'ingress_kbps': {},
             'egress_kbps': {},

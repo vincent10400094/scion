@@ -19,232 +19,390 @@ option go_package = "github.com/scionproto/scion/go/pkg/proto/colibri";
 package proto.colibri.v1;
 
 
-service Colibri {
-    // segment
-    rpc SetupSegment(SegmentSetupRequest) returns (SegmentSetupResponse) {}
-    rpc ConfirmSegmentIndex(Request) returns (Response) {}
-    rpc ActivateSegmentIndex(Request) returns (Response) {}
-    rpc TeardownSegment(Request) returns (Response) {}
-    rpc CleanupSegmentIndex(Request) returns (Response) {}
-    // e2e
-    rpc ListReservations(ListRequest) returns (ListResponse) {}
-    rpc SetupE2e(E2eSetupRequest) returns (E2eSetupResponse) {}
-    rpc CleanupE2eIndex(Request) returns (Response) {}
+service ColibriService {
+    // Segment RPCs:
 
-    // facing the intra AS scion daemons
+    // set up or renew a segment reservation.
+    rpc SegmentSetup(SegmentSetupRequest) returns (SegmentSetupResponse) {}
+    // confirm a segment reservation.
+    rpc ConfirmSegmentIndex(ConfirmSegmentIndexRequest) returns (ConfirmSegmentIndexResponse) {}
+    // activate a segment reservation.
+    rpc ActivateSegmentIndex(ActivateSegmentIndexRequest) returns (ActivateSegmentIndexResponse) {}
+    // teardown (remove) a segment reservation.
+    rpc TeardownSegment(TeardownSegmentRequest) returns (TeardownSegmentResponse) {}
+    // clean up a segment reservation index.
+    rpc CleanupSegmentIndex(CleanupSegmentIndexRequest) returns (CleanupSegmentIndexResponse) {}
+    
+    // E2E RPCs:
+
+    // list segment reservations registered in this AS.
+    rpc ListReservations(ListReservationsRequest) returns (ListReservationsResponse) {}
+    // set up or renew an EER.
+    rpc E2eSetup(E2eSetupRequest) returns (E2eSetupResponse) {}
+    // clean up an EER index.
+    rpc CleanupE2eIndex(CleanupE2eIndexRequest) returns (CleanupE2eIndexResponse) {}
+
+    // Intra AS RPCs:
+    // list segment resrvations.
     rpc ListStitchables(ListStitchablesRequest) returns (ListStitchablesResponse) {}
-    rpc SetupReservation(DaemonSetupRequest) returns (DaemonSetupResponse) {}
-    rpc CleanupReservation(DaemonCleanupRequest) returns (DaemonCleanupResponse) {}
-    rpc AddAdmissionEntry(DaemonAdmissionEntry) returns (DaemonAdmissionEntryResponse) {}
+    // create or renew an EER.
+    rpc SetupReservation(SetupReservationRequest) returns (SetupReservationResponse) {}
+    // cleanup (remove) an EER.
+    rpc CleanupReservation(CleanupReservationRequest) returns (CleanupReservationResponse) {}
+    // add a new admission entry to the admission table (as a server).
+    rpc AddAdmissionEntry(AddAdmissionEntryRequest) returns (AddAdmissionEntryResponse) {}
 }
 
 // /////////////////////////////////////////////////
 
 message ReservationID {
+    // the ASID as uint64 (ISD is 0).
     uint64 asid = 1;
+    // the suffix. It will be either IDSegLen or IDE2ELen.
     bytes suffix = 2;
 }
 
-message IndexState {
-    enum State {
-        PENDING = 0;
-        ACTIVE = 1;
-    }
-    State state = 1;
-}
-
 message PathEndProps {
+    // the reservation ends/starts here.
     bool local = 1;
+    // the reservation can be stiched at the start/end.
     bool transfer = 2;
 }
 
 message AllocationBead {
+    // the allocated bw class.
     uint32 allocbw = 1;
+    // the maximum bandwidth class requested.
     uint32 maxbw = 2;
 }
 
 message PathStep {
+    // the full IA.
     uint64 ia = 1;
+    // ingress ID (16 bits).
     uint32 ingress = 2;
+    // egress ID (16 bits).
     uint32 egress =3;
 }
 
 message TransparentPath {
+    // current step (8 bits).
     uint32 current_step = 1;
+    // the path steps.
     repeated PathStep steps = 2;
-    uint32 spathType = 3;
-    bytes spathRaw = 4;
+    // the spath type.
+    uint32 spath_type = 3;
+    // the spath raw representation (after serialization).
+    bytes spath_raw = 4;
 }
 
 ////////////////////////////////////////
 
 message Request {
+    // the reservation ID the request refers to.
     ReservationID id = 1;
+    // the index (4 bits). For new setups it is zero.
     uint32 index = 2;
+    // the timestamp when the request was issued.
     uint32 timestamp = 3;
+    // the path the request will follow.
     TransparentPath path = 4;
 }
 
 message Response {
     message Success {}
     message Failure {
+        // the error identifying code.
         uint32 error_code = 1; // TODO(juagargi) currently unused
+        // a human readable description of the error.
         string message = 2;
+        // the index of the step in the path that the request traversed where the error occurred.
         uint32 failing_hop = 3;
     }
 
     oneof success_failure {
+        // a success field representing a successful response.
         Success success = 1;
+        // a failure field representing a failure message.
         Failure failure = 2;
     }
 }
 
 message SegmentSetupRequest {
     message Params {
+        // the expiration time of the requested reservation, setup by the source.
         uint32 expiration_time = 1;
+        // the request latency class, encodes a RLC of 6 bits.
         uint32 rlc = 2;
+        // the reservation path type, encodes a PathType (currently 1 byte).
         uint32 path_type = 3;
+        // the requested minimum BW class, encodes a BWCls of 6 bits.
         uint32 minbw = 4;
+        // the maximum requested BW class, BWCls of 6 bits.
         uint32 maxbw = 5;
+        // the split class, partitioning the SegR. in control and data plane traffic. SlitCls, 1 byte.
         uint32 splitcls = 6;
+        // the properties (L and/or T) at the source of the reservation.
         PathEndProps props_at_start = 7;
+        // the properties (L and/or T) at the destination of the reservation.
         PathEndProps props_at_end = 8;
+        // the allocation trail of this request. Allows to check which AS gave how much BW.
         repeated AllocationBead allocationtrail = 9;
         // when a down rsv., indicates the req. is just traveling to the last AS to be
         // re-requested from there (admission is done in the direction of the reservation).
         bool reverse_traveling = 10;
     }
 
+    // the basic parameters of the request: ID, index, timestamp and path.
     Request base = 1;
+    // the setup parameters of the request.
     Params params = 2;
 }
 
 message SegmentSetupResponse {
     message Failure {
+        // the basic failure field: error code, message and failing AS index.
         Response.Failure failure = 1;
+        // the request that originated this failure.
         SegmentSetupRequest.Params request = 2;
     }
 
     oneof success_failure {
+        // the token to store at the source of the reservation, if successful.
         bytes token = 1;
+        // if failure, this field will not be null, and will contain the failure message.
         Failure failure = 2;
     }
 }
 
-message ListRequest {
+message ConfirmSegmentIndexRequest {
+    // the basic request
+    Request base = 1;
+}
+
+message ConfirmSegmentIndexResponse {
+    // the basic response
+    Response base = 1;
+}
+
+message ActivateSegmentIndexRequest {
+    // the basic request
+    Request base = 1;
+}
+
+message ActivateSegmentIndexResponse {
+    // the basic response
+    Response base = 1;
+}
+
+message TeardownSegmentRequest {
+    // the basic request
+    Request base = 1;
+}
+
+message TeardownSegmentResponse {
+    // the basic response
+    Response base = 1;
+}
+
+message CleanupSegmentIndexRequest {
+    // the basic request
+    Request base = 1;
+}
+
+message CleanupSegmentIndexResponse {
+    // the basic response
+    Response base = 1;
+}
+
+message ListReservationsRequest {
+    // the destination IA. The source is the receiver of the message.
     uint64 dst_ia = 1;
+    // the reservation path type.
     uint32 path_type = 2;
 }
 
-message ListResponse {
+message ListReservationsResponse {
+    // the reservation looks represent the public values a reservation has, as registered.
+    // These values can be later used to filter, sort them, etc.
     message ReservationLooks {
-        ReservationID ID = 1;
+        // the reservation ID for which this message describe its established parameters.
+        ReservationID id = 1;
+        // source of the reservation.
         uint64 src_ia = 2;
+        // destination of the reservation.
         uint64 dst_ia = 3;
+        // the expiration time of the reservation.
         uint32 expiration_time = 4;
+        // minimum BW as recorded in the reservation.
         uint32 minbw = 5;
+        // maximum bandwidth.
         uint32 maxbw = 6;
+        // the actual allocated bandwidth for the reservation.
         uint32 allocbw = 7;
+        // split class
         uint32 splitcls = 8;
+        // the path (sequence of AS steps) of this reservation.
         repeated PathStep path = 9;
     }
+    // human readable error message or nil if this response is not an error.
     string error_message = 1;
+    // the collection of reservations for the list request.
     repeated ReservationLooks reservations = 2;
 }
 
 
 message E2eSetupRequest {
     message PathParams {
+        // the IDs of the segments to stitch for this e2e reservation, in traversal order.
         repeated ReservationID segments = 1;
-        uint32 current_segment = 2; // index of the current segment.
-                                    // If the node is transfer, the first segment it belongs to.
-        uint64 src_ia = 3; // the ASID will be identical to the ASID of the rsv. ID
+        // index of the current segment.
+        // If the node is transfer, the first segment it belongs to.
+        uint32 current_segment = 2;
+        // source IA. Its ASID part will be identical to the ASID field of the rsv. ID.
+        uint64 src_ia = 3;
+        // encodes the address of the source host.
         bytes src_host = 4;
-        uint64 dst_ia = 5; // to compute MACs as we pass the request to the next AS.
+        // The destination IA, used to compute MACs as we pass the request to the next AS.
+        uint64 dst_ia = 5;
+        // encodes the address of the destination host. It must be the same address that the
+        // destination used to register itself in its COLIBRI service.
         bytes dst_host = 6;
     }
     message E2eSetupBead {
+        // each on path AS writes here the max. BW it's willing to give.
         uint32 maxbw = 1;
     }
 
-    Request base = 1; // the path here is from src to dst
-    uint32 requestedBw = 3;
+    // the base request. The path included here is from src to dst, so the full path.
+    Request base = 1;
+    // the requested bw.
+    uint32 requested_bw = 3;
+    // the parameters of the request.
     PathParams params = 4;
-    repeated E2eSetupBead allocationtrail = 5; // even failed nodes will write an entry
+    // the allocation trail. All on path ASes will write an entry,
+    // to know which AS are willing to grant how much.
+    repeated E2eSetupBead allocationtrail = 5;
 }
 
 message E2eSetupResponse {
     message Failure {
+        // a human readable error message.
         string message = 1;
+        // the index of the path step that originated an error.
         uint32 failed_step = 2;
+        // the allocation trail, as described above.
         repeated E2eSetupRequest.E2eSetupBead allocationtrail = 3;
     }
-    Failure failure = 1; // if present: information about the failure
+    // if present: information about the failure
+    Failure failure = 1;
+    // if successful, the serialized token.
     bytes token = 2;
 }
 
+message CleanupE2eIndexRequest {
+    // the basic request
+    Request base = 1;
+}
+
+message CleanupE2eIndexResponse {
+    // the basic response
+    Response base = 1;
+}
 
 message ListStitchablesRequest {
+    // the destination IA. The source is the receiver of the message.
     uint64 dst_ia = 1;
 }
 
 message ListStitchablesResponse {
+    // human readable error message.
     string error_message = 1;
+    // src IA.
     uint64 src_ia = 2;
+    // dst IA.
     uint64 dst_ia = 3;
-    repeated ListResponse.ReservationLooks up = 4;
-    repeated ListResponse.ReservationLooks core = 5;
-    repeated ListResponse.ReservationLooks down = 6;
+    // SegRs of type up.
+    repeated ListReservationsResponse.ReservationLooks up = 4;
+    // SegRs of type core.
+    repeated ListReservationsResponse.ReservationLooks core = 5;
+    // SegRs of type down.
+    repeated ListReservationsResponse.ReservationLooks down = 6;
 }
 
-// DaemonCleanupRequest is sent from the endhost to the colibri service.
+// SetupReservationRequest is sent from the endhost to the colibri service.
 // The message doesn't have a src_host because the service will automatically use the
 // source address of the TCP connection.
-message DaemonSetupRequest {
+message SetupReservationRequest {
+    // src IA.
     uint64 src_ia = 1;
+    // dst IA.
     uint64 dst_ia = 2;
+    // address of the destination host.
     bytes dst_host = 3;
+    // the E2E reservation ID.
     ReservationID id = 4;
+    // the E2E index.
     uint32 index = 5;
+    // the SegR IDs to stitch for this EER.
     repeated ReservationID segments = 6;
+    // the requested BW.
     uint32 requested_bw = 7;
 }
 
-message DaemonSetupResponse {
+message SetupReservationResponse {
     message Failure {
+        // a human readable error message.
         string error_message = 1;
+        // the index of the path step that originated the failure.
         uint32 failed_step = 2;
+        // the allocation trail.
         repeated uint32 alloc_trail = 3;
     }
     message Success {
+        // the byte-encoded spath.
         bytes spath = 1;
+        // the string encoded address of the next hop (the border router to use at the source AS).
         string next_hop = 2;
     }
-    Failure failure = 1; // if present: information about the failure
-    Success success = 2; // should be present if failure == nil
+    // if present: information about the failure
+    Failure failure = 1;
+    // should be present if failure == nil
+    Success success = 2;
 }
 
-message DaemonCleanupRequest {
+message CleanupReservationRequest {
+    // the EER ID to clean.
     ReservationID id = 1;
+    // the EER index to clean.
     uint32 index = 2;
 }
 
-message DaemonCleanupResponse {
+message CleanupReservationResponse {
     message Failure {
+        // a human readable error message.
         string error_message = 1;
+        // the index of the path step that originated the failure.
         uint32 failed_step = 2;
     }
-    Failure failure = 1; // or nil if all ok
+    // failure has the failure message, or nil if all ok.
+    Failure failure = 1;
 }
 
-message DaemonAdmissionEntry {
-    bytes dst_host = 1; // the owner host
+message AddAdmissionEntryRequest {
+    // the address of the owner host (the reservation destination).
+    bytes dst_host = 1;
+    // validity of the entry.
     uint32 valid_until = 2;
+    // regular expression matching the source IA.
     string regexp_ia = 3;
+    // regular expression matching the source host address.
     string regexp_host = 4;
+    // if the entry matches the EER request, the field accept indicates whether to accept of reject the request.
     bool accept = 5;
 }
 
-message DaemonAdmissionEntryResponse {
+message AddAdmissionEntryResponse {
+    // the validity of the proposed admission entry, possibly corrected at the COLIBRI service.
     uint32 valid_until = 1;
 }

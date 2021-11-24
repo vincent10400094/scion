@@ -5,8 +5,8 @@ gomock(
     name = "go_default_mock",
     out = "mock.go",
     interfaces = [
-        "ColibriClient",
-        "ColibriServer",
+        "ColibriServiceClient",
+        "ColibriServiceServer",
     ],
     library = "//go/pkg/proto/colibri:go_default_library",
     package = "mock_colibri",

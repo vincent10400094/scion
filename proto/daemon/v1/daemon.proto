@@ -39,13 +39,13 @@ service DaemonService {
     // Return the Lvl2Key that matches the request.
     rpc DRKeyLvl2(DRKeyLvl2Request) returns (DRKeyLvl2Response) {}
     // Obtain a list of reservation information from the AS towards another one.
-    rpc ColibriListRsvs(ColibriListRequest) returns (ColibriListResponse) {}
+    rpc ColibriListRsvs(ColibriListRsvsRequest) returns (ColibriListRsvsResponse) {}
     // Setup an E2E reservation.
-    rpc ColibriSetupRsv(ColibriSetupRequest) returns (ColibriSetupResponse) {}
+    rpc ColibriSetupRsv(ColibriSetupRsvRequest) returns (ColibriSetupRsvResponse) {}
     // Cleans an E2E reservation up.
-    rpc ColibriCleanupRsv(ColibriCleanupRequest) returns (ColibriCleanupResponse) {}
+    rpc ColibriCleanupRsv(ColibriCleanupRsvRequest) returns (ColibriCleanupRsvResponse) {}
     // Adds a new automatically expiring entry to the admission list for the host.
-    rpc ColibriAddAdmissionEntry(ColibriAdmissionEntry) returns (ColibriAdmissionEntryResponse) {}
+    rpc ColibriAddAdmissionEntry(ColibriAddAdmissionEntryRequest) returns (ColibriAddAdmissionEntryResponse) {}
 }
 
 message PathsRequest {
@@ -205,34 +205,42 @@ message DRKeyLvl2Response {
     proto.drkey.mgmt.v1.DRKeyLvl2Response base_rep = 1;
 }
 
-message ColibriListRequest {
+message ColibriListRsvsRequest {
+    // the list request.
     proto.colibri.v1.ListStitchablesRequest base = 1;
 }
 
-message ColibriListResponse {
+message ColibriListRsvsResponse {
+    // the list reponse.
     proto.colibri.v1.ListStitchablesResponse base = 1;
 }
 
-message ColibriSetupRequest {
-    proto.colibri.v1.DaemonSetupRequest base = 1;
+message ColibriSetupRsvRequest {
+    // the EER setup request.
+    proto.colibri.v1.SetupReservationRequest base = 1;
 }
 
-message ColibriSetupResponse {
-    proto.colibri.v1.DaemonSetupResponse base = 1;
+message ColibriSetupRsvResponse {
+    // the EER setup response.
+    proto.colibri.v1.SetupReservationResponse base = 1;
 }
 
-message ColibriCleanupRequest {
-    proto.colibri.v1.DaemonCleanupRequest base = 1;
+message ColibriCleanupRsvRequest {
+    // the EER cleanup request.
+    proto.colibri.v1.CleanupReservationRequest base = 1;
 }
 
-message ColibriCleanupResponse {
-    proto.colibri.v1.DaemonCleanupResponse base = 1;
+message ColibriCleanupRsvResponse {
+    // the EER cleanup response.
+    proto.colibri.v1.CleanupReservationResponse base = 1;
 }
 
-message ColibriAdmissionEntry {
-    proto.colibri.v1.DaemonAdmissionEntry base = 1;
+message ColibriAddAdmissionEntryRequest {
+    // the admission entry. Each destination host will probably have several of these.
+    proto.colibri.v1.AddAdmissionEntryRequest base = 1; // TODO(juagargi) pass several entries at once.
 }
 
-message ColibriAdmissionEntryResponse {
-    proto.colibri.v1.DaemonAdmissionEntryResponse base = 1;
+message ColibriAddAdmissionEntryResponse {
+    // the admission entry response.
+    proto.colibri.v1.AddAdmissionEntryResponse base = 1;
 }
