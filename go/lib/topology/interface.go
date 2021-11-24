@@ -27,13 +27,6 @@ import (
 	jsontopo "github.com/scionproto/scion/go/lib/topology/json"
 )
 
-// Provider provides a topology snapshot. The snapshot is guaranteed to not change.
-type Provider interface {
-	// Get returns a topology. The returned topology is guaranteed to not be
-	// nil.
-	Get() Topology
-}
-
 // Topology is the topology type for applications and libraries that only need read access to AS
 // topology information. This is the case of most applications and libraries that use the topology
 // file to discover information about the local AS. Libraries that need to edit the topology (e.g.,
@@ -244,14 +237,6 @@ func (t *topologyS) topoAddress(svc addr.HostSVC, name string) *TopoAddr {
 		addresses = t.Topology.CS
 	case addr.SvcCOL:
 		addresses = t.Topology.CO
-	case addr.SvcSIG:
-		if len(t.Topology.SIG) == 0 {
-			break
-		}
-		addresses = make(IDAddrMap)
-		for k, v := range t.Topology.SIG {
-			addresses[k] = *v.CtrlAddr
-		}
 	}
 	if addresses == nil {
 		return nil
@@ -311,7 +296,7 @@ func (t *topologyS) UnderlayAnycast(svc addr.HostSVC) (*net.UDPAddr, error) {
 
 func supportedSVC(svc addr.HostSVC) bool {
 	b := svc.Base()
-	return b == addr.SvcDS || b == addr.SvcCS || b == addr.SvcCOL || b == addr.SvcSIG
+	return b == addr.SvcDS || b == addr.SvcCS || b == addr.SvcCOL
 }
 
 func (t *topologyS) UnderlayMulticast(svc addr.HostSVC) ([]*net.UDPAddr, error) {
@@ -370,8 +355,6 @@ func toServiceType(svc addr.HostSVC) (ServiceType, error) {
 		return Control, nil
 	case addr.SvcCOL:
 		return Colibri, nil
-	case addr.SvcSIG:
-		return Gateway, nil
 	default:
 		return 0, serrors.WithCtx(addr.ErrUnsupportedSVCAddress, "svc", svc)
 	}
@@ -394,14 +377,6 @@ func (t *topologyS) SVCNames(svc addr.HostSVC) ServiceNames {
 		m = t.Topology.CS
 	case addr.SvcCOL:
 		m = t.Topology.CO
-	case addr.SvcSIG:
-		if len(t.Topology.SIG) == 0 {
-			break
-		}
-		m = make(IDAddrMap)
-		for k, v := range t.Topology.SIG {
-			m[k] = *v.CtrlAddr
-		}
 	}
 
 	var names ServiceNames

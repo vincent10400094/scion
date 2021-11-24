@@ -50,6 +50,7 @@ func main() {
 		newPing(cmd),
 		newShowpaths(cmd),
 		newTraceroute(cmd),
+		newAddress(cmd),
 		newColibri(cmd),
 	)
 

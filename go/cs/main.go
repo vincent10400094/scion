@@ -18,7 +18,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
-	"net"
+	"fmt"
 	"net/http"
 	_ "net/http/pprof"
 	"path/filepath"
@@ -30,10 +30,12 @@ import (
 	"github.com/grpc-ecosystem/grpc-opentracing/go/otgrpc"
 	"github.com/opentracing/opentracing-go"
 	"github.com/spf13/cobra"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/health"
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
+	"inet.af/netaddr"
 
 	"github.com/scionproto/scion/go/cs/beacon"
 	"github.com/scionproto/scion/go/cs/beaconing"
@@ -44,12 +46,9 @@ import (
 	segreggrpc "github.com/scionproto/scion/go/cs/segreg/grpc"
 	"github.com/scionproto/scion/go/cs/segreq"
 	segreqgrpc "github.com/scionproto/scion/go/cs/segreq/grpc"
-	"github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/drkeystorage"
-	"github.com/scionproto/scion/go/lib/fatal"
 	"github.com/scionproto/scion/go/lib/infra/infraenv"
-	"github.com/scionproto/scion/go/lib/infra/messenger"
-	"github.com/scionproto/scion/go/lib/infra/modules/itopo"
 	segfetchergrpc "github.com/scionproto/scion/go/lib/infra/modules/segfetcher/grpc"
 	"github.com/scionproto/scion/go/lib/infra/modules/seghandler"
 	"github.com/scionproto/scion/go/lib/keyconf"
@@ -63,6 +62,7 @@ import (
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/pkg/api/jwtauth"
+	"github.com/scionproto/scion/go/pkg/app"
 	"github.com/scionproto/scion/go/pkg/app/launcher"
 	caapi "github.com/scionproto/scion/go/pkg/ca/api"
 	caconfig "github.com/scionproto/scion/go/pkg/ca/config"
@@ -107,11 +107,34 @@ func main() {
 func realMain(ctx context.Context) error {
 	metrics := cs.NewMetrics()
 
-	intfs, err := setup(&globalCfg)
+	topo, err := topology.NewLoader(topology.LoaderCfg{
+		File:      globalCfg.General.Topology(),
+		Reload:    app.SIGHUPChannel(ctx),
+		Validator: &topology.ControlValidator{ID: globalCfg.General.ID},
+		Metrics:   metrics.TopoLoader,
+	})
 	if err != nil {
-		return err
+		return serrors.WrapStr("creating topology loader", err)
 	}
-	topo := itopo.Get()
+	g, errCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		defer log.HandlePanic()
+		return topo.Run(errCtx)
+	})
+	intfs := ifstate.NewInterfaces(adaptInterfaceMap(topo.InterfaceInfoMap()), ifstate.Config{})
+	g.Go(func() error {
+		defer log.HandlePanic()
+		sub := topo.Subscribe()
+		defer sub.Close()
+		for {
+			select {
+			case <-sub.Updates:
+				intfs.Update(adaptInterfaceMap(topo.InterfaceInfoMap()))
+			case <-errCtx.Done():
+				return nil
+			}
+		}
+	})
 
 	closer, err := cs.InitTracer(globalCfg.Tracing, globalCfg.General.ID)
 	if err != nil {
@@ -138,15 +161,18 @@ func realMain(ctx context.Context) error {
 
 	nc := infraenv.NetworkConfig{
 		IA:                    topo.IA(),
-		Public:                topo.PublicAddress(addr.SvcCS, globalCfg.General.ID),
+		Public:                topo.ControlServiceAddress(globalCfg.General.ID),
 		ReconnectToDispatcher: globalCfg.General.ReconnectToDispatcher,
 		QUIC: infraenv.QUIC{
 			Address: globalCfg.QUIC.Address,
 		},
-		SVCRouter: messenger.NewSVCRouter(itopo.Provider()),
+		SVCResolver: topo,
 		SCMPHandler: snet.DefaultSCMPHandler{
 			RevocationHandler: cs.RevocationHandler{RevCache: revCache},
+			SCMPErrors:        metrics.SCMPErrors,
 		},
+		SCIONNetworkMetrics:    metrics.SCIONNetworkMetrics,
+		SCIONPacketConnMetrics: metrics.SCIONPacketConnMetrics,
 	}
 	quicStack, err := nc.QUICStack()
 	if err != nil {
@@ -195,7 +221,7 @@ func realMain(ctx context.Context) error {
 		Driver:       string(storage.BackendSqlite),
 		QueriesTotal: libmetrics.NewPromCounter(metrics.TrustDBQueriesTotal),
 	})
-	if err := cs.LoadTrustMaterial(globalCfg.General.ConfigDir, trustDB, log.Root()); err != nil {
+	if err := cs.LoadTrustMaterial(ctx, globalCfg.General.ConfigDir, trustDB); err != nil {
 		return err
 	}
 
@@ -209,7 +235,7 @@ func realMain(ctx context.Context) error {
 		QueriesTotal: libmetrics.NewPromCounter(metrics.BeaconDBQueriesTotal),
 	})
 
-	beaconStore, policies, isdLoopAllowed, err := createBeaconStore(
+	beaconStore, isdLoopAllowed, err := createBeaconStore(
 		beaconDB,
 		topo.Core(),
 		globalCfg.BS.Policies,
@@ -248,15 +274,17 @@ func realMain(ctx context.Context) error {
 	}
 	fetcherCfg := segreq.FetcherConfig{
 		IA:            topo.IA(),
+		MTU:           topo.MTU(),
+		Core:          topo.Core(),
+		NextHopper:    topo,
 		PathDB:        pathDB,
 		RevCache:      revCache,
 		QueryInterval: globalCfg.PS.QueryInterval.Duration,
 		RPC: &segfetchergrpc.Requester{
 			Dialer: dialer,
 		},
-		Inspector:    inspector,
-		TopoProvider: itopo.Provider(),
-		Verifier:     verifier,
+		Inspector: inspector,
+		Verifier:  verifier,
 	}
 	provider.Router = trust.AuthRouter{
 		ISD:    topo.IA().I,
@@ -475,7 +503,7 @@ func realMain(ctx context.Context) error {
 	trcRunner.TriggerRun()
 
 	ds := discovery.Topology{
-		Information: topoInformation{},
+		Information: topo,
 		Requests:    libmetrics.NewPromCounter(metrics.DiscoveryRequestsTotal),
 	}
 	dpb.RegisterDiscoveryServiceServer(quicServer, ds)
@@ -561,26 +589,30 @@ func realMain(ctx context.Context) error {
 
 	promgrpc.Register(quicServer)
 	promgrpc.Register(tcpServer)
-	go func() {
+
+	var cleanup app.Cleanup
+	g.Go(func() error {
 		defer log.HandlePanic()
 		if err := quicServer.Serve(quicStack.Listener); err != nil {
-			fatal.Fatal(err)
+			return serrors.WrapStr("serving gRPC/QUIC API", err)
 		}
-	}()
-	go func() {
+		return nil
+	})
+	cleanup.Add(func() error { quicServer.GracefulStop(); return nil })
+	g.Go(func() error {
 		defer log.HandlePanic()
 		if err := tcpServer.Serve(tcpStack); err != nil {
-			fatal.Fatal(err)
+			return serrors.WrapStr("serving gRPC/TCP API", err)
 		}
-	}()
+		return nil
+	})
+	cleanup.Add(func() error { tcpServer.GracefulStop(); return nil })
 
 	if globalCfg.DRKey.Enabled() {
-		go func() {
+		g.Go(func() error {
 			defer log.HandlePanic()
-			if err := quicTLSServer.Serve(quicStack.TLSListener); err != nil {
-				fatal.Fatal(err)
-			}
-		}()
+			return quicTLSServer.Serve(quicStack.TLSListener)
+		})
 	}
 
 	if globalCfg.API.Addr != "" {
@@ -588,6 +620,8 @@ func realMain(ctx context.Context) error {
 		r.Use(cors.Handler(cors.Options{
 			AllowedOrigins: []string{"*"},
 		}))
+		r.Get("/", api.ServeSpecInteractive)
+		r.Get("/openapi.json", api.ServeSpecJSON)
 		server := api.Server{
 			Segments: pathDB,
 			CA:       chainBuilder,
@@ -595,23 +629,34 @@ func realMain(ctx context.Context) error {
 			Info:     service.NewInfoStatusPage().Handler,
 			LogLevel: service.NewLogLevelStatusPage().Handler,
 			Signer:   signer,
-			Topology: itopo.TopologyHandler,
+			Topology: topo.HandleHTTP,
 			TrustDB:  trustDB,
 		}
 		log.Info("Exposing API", "addr", globalCfg.API.Addr)
-		h := api.HandlerFromMux(&server, r)
-		go func() {
+		s := http.Server{
+			Addr:    globalCfg.API.Addr,
+			Handler: api.HandlerFromMuxWithBaseURL(&server, r, "/api/v1"),
+		}
+		g.Go(func() error {
 			defer log.HandlePanic()
-			if err := http.ListenAndServe(globalCfg.API.Addr, h); err != nil {
-				fatal.Fatal(serrors.WrapStr("serving HTTP API", err))
+			if err := s.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				return serrors.WrapStr("serving service management API", err)
 			}
-		}()
+			return nil
+		})
+		cleanup.Add(s.Close)
 	}
-	err = cs.StartHTTPEndpoints(globalCfg.General.ID, &globalCfg, signer, chainBuilder,
-		globalCfg.Metrics, policies.Digests())
+	err = cs.RegisterHTTPEndpoints(
+		globalCfg.General.ID,
+		&globalCfg,
+		signer,
+		chainBuilder,
+		topo,
+	)
 	if err != nil {
-		return serrors.WrapStr("registering status pages", err)
+		return err
 	}
+
 	staticInfo, err := beaconing.ParseStaticInfoCfg(globalCfg.General.StaticInfoConfig())
 	if err != nil {
 		log.Info("No static info file found. Static info settings disabled.", "err", err)
@@ -636,6 +681,9 @@ func realMain(ctx context.Context) error {
 	}
 
 	tasks, err := cs.StartTasks(cs.TasksConfig{
+		IA:            topo.IA(),
+		Core:          topo.Core(),
+		MTU:           topo.MTU(),
 		Public:        nc.Public,
 		AllInterfaces: intfs,
 		PropagationInterfaces: func() []*ifstate.Interface {
@@ -657,7 +705,7 @@ func realMain(ctx context.Context) error {
 		Metrics:         metrics,
 		DRKeyStore:      drkeyServStore,
 		MACGen:          macGen,
-		TopoProvider:    itopo.Provider(),
+		NextHopper:      topo,
 		StaticInfo:      func() *beaconing.StaticInfoCfg { return staticInfo },
 
 		OriginationInterval:       globalCfg.BS.OriginationInterval.Duration,
@@ -673,62 +721,40 @@ func realMain(ctx context.Context) error {
 	defer tasks.Kill()
 	log.Info("Started periodic tasks")
 
-	select {
-	case <-fatal.ShutdownChan():
-		// Whenever we receive a SIGINT or SIGTERM we exit without an error.
-		// Deferred shutdowns for all running servers run now.
-		return nil
-	case <-fatal.FatalChan():
-		return serrors.New("shutdown on error")
-	}
-}
-
-func setup(cfg *config.Config) (*ifstate.Interfaces, error) {
-	topo, err := topology.FromJSONFile(cfg.General.Topology())
-	if err != nil {
-		return nil, serrors.WrapStr("loading topology", err)
-	}
-	intfs := ifstate.NewInterfaces(topo.IFInfoMap(), ifstate.Config{})
-	itopo.Init(&itopo.Config{
-		ID:  cfg.General.ID,
-		Svc: topology.Control,
-		Callbacks: itopo.Callbacks{
-			OnUpdate: func() {
-				intfs.Update(itopo.Get().IFInfoMap())
-			},
-		},
+	g.Go(func() error {
+		defer log.HandlePanic()
+		return globalCfg.Metrics.ServePrometheus(errCtx)
 	})
-	if err := itopo.Update(topo); err != nil {
-		return nil, serrors.WrapStr("setting initial static topology", err)
-	}
-	infraenv.InitInfraEnvironment(cfg.General.Topology())
-	return intfs, nil
-}
 
-type beaconPolicies interface {
-	Digests() map[string][]byte
+	g.Go(func() error {
+		defer log.HandlePanic()
+		<-errCtx.Done()
+		return cleanup.Do()
+	})
+
+	return g.Wait()
 }
 
 func createBeaconStore(
 	db storage.BeaconDB,
 	core bool,
 	policyConfig config.Policies,
-) (cs.Store, beaconPolicies, bool, error) {
+) (cs.Store, bool, error) {
 
 	if core {
 		policies, err := cs.LoadCorePolicies(policyConfig)
 		if err != nil {
-			return nil, nil, false, err
+			return nil, false, err
 		}
 		store, err := beacon.NewCoreBeaconStore(policies, db)
-		return store, &policies, *policies.Prop.Filter.AllowIsdLoop, err
+		return store, *policies.Prop.Filter.AllowIsdLoop, err
 	}
 	policies, err := cs.LoadNonCorePolicies(policyConfig)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, false, err
 	}
 	store, err := beacon.NewBeaconStore(policies, db)
-	return store, &policies, *policies.Prop.Filter.AllowIsdLoop, err
+	return store, *policies.Prop.Filter.AllowIsdLoop, err
 }
 
 func loadMasterSecret(dir string) (keyconf.Master, error) {
@@ -739,32 +765,25 @@ func loadMasterSecret(dir string) (keyconf.Master, error) {
 	return masterKey, nil
 }
 
-type topoInformation struct{}
-
-func (topoInformation) Gateways() ([]topology.GatewayInfo, error) {
-	return itopo.Get().Gateways()
-}
-
-func (topoInformation) HiddenSegmentLookupAddresses() ([]*net.UDPAddr, error) {
-	a, err := itopo.Get().MakeHostInfos(topology.HiddenSegmentLookup)
-	if errors.Is(err, topology.ErrAddressNotFound) {
-		return nil, nil
+func adaptInterfaceMap(in map[common.IFIDType]topology.IFInfo) map[uint16]ifstate.InterfaceInfo {
+	converted := make(map[uint16]ifstate.InterfaceInfo, len(in))
+	for id, info := range in {
+		addr, ok := netaddr.FromStdAddr(
+			info.InternalAddr.IP,
+			info.InternalAddr.Port,
+			info.InternalAddr.Zone,
+		)
+		if !ok {
+			panic(fmt.Sprintf("failed to adapt the topology format. Input %s", info.InternalAddr))
+		}
+		converted[uint16(id)] = ifstate.InterfaceInfo{
+			ID:           uint16(info.ID),
+			IA:           info.IA,
+			LinkType:     info.LinkType,
+			InternalAddr: addr,
+			RemoteID:     uint16(info.RemoteIFID),
+			MTU:          uint16(info.MTU),
+		}
 	}
-	return a, err
-}
-
-func (topoInformation) HiddenSegmentRegistrationAddresses() ([]*net.UDPAddr, error) {
-	a, err := itopo.Get().MakeHostInfos(topology.HiddenSegmentRegistration)
-	if errors.Is(err, topology.ErrAddressNotFound) {
-		return nil, nil
-	}
-	return a, err
-}
-
-func (topoInformation) ColibriServices() ([]*net.UDPAddr, error) {
-	a, err := itopo.Get().MakeHostInfos(topology.Colibri)
-	if errors.Is(err, topology.ErrAddressNotFound) {
-		return nil, nil
-	}
-	return a, err
+	return converted
 }

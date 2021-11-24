@@ -4,6 +4,12 @@ export PYTHONPATH=.
 
 # BEGIN subcommand functions
 
+in_red() {
+    tput setaf 1
+    echo "$1"
+    tput sgr0
+}
+
 run_silently() {
     tmpfile=$(mktemp /tmp/scion-silent.XXXXXX)
     $@ >>$tmpfile 2>&1
@@ -258,6 +264,8 @@ go_lint() {
     find go acceptance -type f -iname '*.go' \
       -a '!' -ipath '*.pb.go' \
       -a '!' -ipath '*.gen.go' \
+      -a '!' -ipath 'go/scion-pki/certs/certinfo.go' \
+      -a '!' -ipath 'go/scion-pki/certs/certformat.go' \
       -a '!' -ipath '*mock_*' > $TMPDIR/gofiles.list
     lint_step "Building lint tools"
 
@@ -270,12 +278,13 @@ go_lint() {
     # Instead we'll just run the commands from Go SDK directly.
     GOSDK=$(bazel info output_base 2>/dev/null)/external/go_sdk/bin
     out=$($GOSDK/gofmt -d -s $LOCAL_DIRS ./acceptance);
-    if [ -n "$out" ]; then echo "$out"; ret=1; fi
+    if [ -n "$out" ]; then in_red "$out"; ret=1; fi
     lint_step "linelen (lll)"
     out=$($TMPDIR/lll -w 4 -l 100 --files -e '`comment:"|`ini:"|https?:|`sql:"|gorm:"|`json:"|`yaml:|nolint:lll' < $TMPDIR/gofiles.list)
-    if [ -n "$out" ]; then echo "$out"; ret=1; fi
+    if [ -n "$out" ]; then in_red "$out"; ret=1; fi
     lint_step "misspell"
-    xargs -a $TMPDIR/gofiles.list $TMPDIR/misspell -error || ret=1
+    out=$(xargs -a $TMPDIR/gofiles.list $TMPDIR/misspell -error)
+    if [ -n "$out" ]; then in_red "$out"; ret=1; fi
     lint_step "bazel"
     run_silently make gazelle GAZELLE_MODE=diff || ret=1
     bazel test --config lint || ret=1

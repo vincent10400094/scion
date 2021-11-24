@@ -58,7 +58,7 @@ type Store struct {
 var _ reservationstorage.Store = (*Store)(nil)
 
 // NewStore creates a new reservation store.
-func NewStore(topo topology.Topology, router snet.Router, dialer coliquic.GRPCClientDialer,
+func NewStore(topo *topology.Loader, router snet.Router, dialer coliquic.GRPCClientDialer,
 	db backend.DB, admitter admission.Admitter, masterKey []byte) (*Store, error) {
 
 	// check that the admitter is well configured

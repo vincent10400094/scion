@@ -16,7 +16,6 @@ package service
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
 	"html/template"
 	"net/http"
@@ -27,10 +26,10 @@ import (
 	toml "github.com/pelletier/go-toml"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/scionproto/scion/go/lib/config"
 	"github.com/scionproto/scion/go/lib/env"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
+	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/lib/util"
 )
 
@@ -42,20 +41,29 @@ const mainTmpl = `
 	</head>
 	<body style="font-family:sans-serif">
 		<h1>{{ .ElemId }}</h1>
+		<table>
 		{{ range .Pages }}
-		<a href="{{ . }}">[{{ . }}]</a><br>
+		    <tr><td><a href="{{ .Endpoint }}">[{{ .Endpoint }}]</a></td><td>{{ .Info }}</td></tr>
 		{{ end }}
+		</table>
 	</body>
 </html>
 `
 
+type pageData struct {
+	Info     string
+	Endpoint string
+}
+
 type mainData struct {
 	ElemId string
-	Pages  []string
+	Pages  []pageData
 }
 
 // StatusPages describes a status page (HTTP endpoint exposed by the service).
 type StatusPage struct {
+	// Short description on what the endpoint is for. It will be shown on the main page.
+	Info string
 	// Handler processes the HTTP request for this status page.
 	Handler http.HandlerFunc
 	// Special status page is one that should not be dumped via /all endpoint.
@@ -75,13 +83,21 @@ func (s StatusPages) Register(serveMux *http.ServeMux, elemId string) error {
 	if err != nil {
 		return err
 	}
-	var pages []string
-	for endpoint, page := range s {
-		pages = append(pages, endpoint)
-		serveMux.HandleFunc(fmt.Sprintf("/%s", endpoint), page.Handler)
+	var pages []pageData
+	for endpoint, p := range s {
+		pages = append(pages, pageData{
+			Info:     p.Info,
+			Endpoint: endpoint,
+		})
+		serveMux.HandleFunc(fmt.Sprintf("/%s", endpoint), p.Handler)
 	}
-	pages = append(pages, "metrics")
-	sort.Strings(pages)
+	pages = append(pages, pageData{
+		Info:     "prometheus metrics",
+		Endpoint: "metrics",
+	})
+	sort.Slice(pages, func(x, y int) bool {
+		return pages[x].Endpoint < pages[y].Endpoint
+	})
 	var mainBuf bytes.Buffer
 	if err := t.Execute(&mainBuf, mainData{ElemId: elemId, Pages: pages}); err != nil {
 		return serrors.WrapStr("executing template", err)
@@ -117,29 +133,10 @@ func NewConfigStatusPage(config interface{}) StatusPage {
 		toml.NewEncoder(&buf).Order(toml.OrderPreserve).Encode(config)
 		fmt.Fprint(w, buf.String())
 	}
-	return StatusPage{Handler: handler}
-}
-
-func NewConfigDigestStatusPage(cfg config.Config) StatusPage {
-	handler := func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		digest, err := config.Digest(cfg)
-		if err != nil {
-			http.Error(w, "Unable to calculate digest", http.StatusInternalServerError)
-			return
-		}
-		response := struct {
-			Digest []byte `json:"digest"`
-		}{
-			Digest: digest,
-		}
-		enc := json.NewEncoder(w)
-		if err := enc.Encode(response); err != nil {
-			http.Error(w, "Unable to marshal response", http.StatusInternalServerError)
-			return
-		}
+	return StatusPage{
+		Info:    "configuration of the service",
+		Handler: handler,
 	}
-	return StatusPage{Handler: handler}
 }
 
 // NewInfoStatusPage returns a page with basic info about the process.
@@ -156,10 +153,23 @@ func NewInfoStatusPage() StatusPage {
 		w.Header().Set("Content-Type", "text/plain")
 		fmt.Fprint(w, info)
 	}
-	return StatusPage{Handler: handler}
+	return StatusPage{
+		Info:    "generic info about the process",
+		Handler: handler,
+	}
 }
 
 // NewLogLevelStatusPage returns a page with basic info about the process.
 func NewLogLevelStatusPage() StatusPage {
-	return StatusPage{Handler: log.ConsoleLevel.ServeHTTP}
+	return StatusPage{
+		Info:    "logging level (supports PUT)",
+		Handler: log.ConsoleLevel.ServeHTTP,
+	}
+}
+
+func NewTopologyStatusPage(l *topology.Loader) StatusPage {
+	return StatusPage{
+		Info:    "SCION topology",
+		Handler: l.HandleHTTP,
+	}
 }

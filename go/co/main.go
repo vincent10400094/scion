@@ -19,23 +19,21 @@ import (
 	"path/filepath"
 	"time"
 
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/grpc"
 
 	coli_conf "github.com/scionproto/scion/go/co/reservation/conf"
 	admission "github.com/scionproto/scion/go/co/reservation/segment/admission/stateless"
 	"github.com/scionproto/scion/go/co/reservationstorage"
 	"github.com/scionproto/scion/go/co/reservationstore"
-	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri/coliquic"
-	"github.com/scionproto/scion/go/lib/fatal"
-	"github.com/scionproto/scion/go/lib/infra/infraenv"
-	"github.com/scionproto/scion/go/lib/infra/modules/itopo"
 	"github.com/scionproto/scion/go/lib/keyconf"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/periodic"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/topology"
+	"github.com/scionproto/scion/go/pkg/app"
 	"github.com/scionproto/scion/go/pkg/app/launcher"
 	colgrpc "github.com/scionproto/scion/go/pkg/co/colibri/grpc"
 	"github.com/scionproto/scion/go/pkg/colibri/config"
@@ -57,25 +55,38 @@ func main() {
 }
 
 func realMain(ctx context.Context, cfg *config.Config) error {
-	cfgObjs, err := setup(ctx, cfg)
+	topo, err := topology.NewLoader(topology.LoaderCfg{
+		File:      cfg.General.Topology(),
+		Reload:    app.SIGHUPChannel(ctx),
+		Validator: &topology.ColibriValidator{ID: cfg.General.ID},
+		// Metrics: , // TODO(juagargi) add observability to colibri
+	})
+	if err != nil {
+		return serrors.WrapStr("creating topology loader", err)
+	}
+	g, errCtx := errgroup.WithContext(ctx)
+	g.Go(func() error {
+		defer log.HandlePanic()
+		return topo.Run(errCtx)
+	})
+
+	cfgObjs, err := setup(ctx, cfg, topo)
 	if err != nil {
 		return err
 	}
 
-	manager, err := setupColibri(cfg, cfgObjs)
+	manager, err := setupColibri(g, cfg, cfgObjs, topo)
 	if err != nil {
 		return err
 	}
 	defer manager.Kill()
 
-	select {
-	case <-fatal.ShutdownChan():
-		// Whenever we receive a SIGINT or SIGTERM we exit without an error.
-		// Deferred shutdowns for all running servers run now.
+	g.Go(func() error {
+		defer log.HandlePanic()
+		<-errCtx.Done()
 		return nil
-	case <-fatal.FatalChan():
-		return serrors.New("shutdown on error")
-	}
+	})
+	return g.Wait()
 }
 
 // cfgObjs contains the objects needed for the confinguration of colibri.
@@ -84,21 +95,8 @@ type cfgObjs struct {
 	stack     *coliquic.ServerStack
 }
 
-func setup(ctx context.Context, cfg *config.Config) (*cfgObjs, error) {
-	topo, err := topology.FromJSONFile(cfg.General.Topology())
-	if err != nil {
-		return nil, serrors.WrapStr("loading topology", err)
-	}
-	itopo.Init(&itopo.Config{
-		ID:  cfg.General.ID,
-		Svc: topology.Colibri,
-	})
-	if err := itopo.Update(topo); err != nil {
-		return nil, serrors.WrapStr("unable to set initial static topology", err)
-	}
-	infraenv.InitInfraEnvironment(cfg.General.Topology())
-
-	cfgObjs, err := setupNetwork(ctx, cfg)
+func setup(ctx context.Context, cfg *config.Config, topo *topology.Loader) (*cfgObjs, error) {
+	cfgObjs, err := setupNetwork(ctx, cfg, topo)
 	if err != nil {
 		return cfgObjs, serrors.WrapStr("setting network config", err)
 	}
@@ -111,12 +109,12 @@ func setup(ctx context.Context, cfg *config.Config) (*cfgObjs, error) {
 	return cfgObjs, nil
 }
 
-func setupNetwork(ctx context.Context, cfg *config.Config) (*cfgObjs, error) {
+func setupNetwork(ctx context.Context, cfg *config.Config, topo *topology.Loader) (
+	*cfgObjs, error) {
 
-	topo := itopo.Get()
 	serverAddr := &snet.UDPAddr{
 		IA:   topo.IA(),
-		Host: topo.PublicAddress(addr.SvcCOL, cfg.General.ID),
+		Host: topo.ColibriServiceAddress(cfg.General.ID),
 	}
 
 	stack, err := coliquic.NewServerStack(ctx, serverAddr, cfg.Daemon.Address)
@@ -130,7 +128,9 @@ func setupNetwork(ctx context.Context, cfg *config.Config) (*cfgObjs, error) {
 }
 
 // setupColibri returns the running manager.
-func setupColibri(cfg *config.Config, cfgObjs *cfgObjs) (*periodic.Runner, error) {
+func setupColibri(g *errgroup.Group, cfg *config.Config, cfgObjs *cfgObjs, topo *topology.Loader) (
+	*periodic.Runner, error) {
+
 	db, err := storage.NewColibriStorage(cfg.Colibri.DB)
 	if err != nil {
 		return nil, serrors.WrapStr("error initializing COLIBRI DB", err)
@@ -140,7 +140,7 @@ func setupColibri(cfg *config.Config, cfgObjs *cfgObjs) (*periodic.Runner, error
 		Caps:  cfg.Colibri.Capacities,
 		Delta: cfg.Colibri.Delta,
 	}
-	colibriStore, err := reservationstore.NewStore(itopo.Get(), cfgObjs.stack.Router, cfgObjs.stack.Dialer,
+	colibriStore, err := reservationstore.NewStore(topo, cfgObjs.stack.Router, cfgObjs.stack.Dialer,
 		db, admitter, cfgObjs.masterKey.Key0)
 	if err != nil {
 		return nil, serrors.WrapStr("initializing colibri store", err)
@@ -155,23 +155,18 @@ func setupColibri(cfg *config.Config, cfgObjs *cfgObjs) (*periodic.Runner, error
 	colpb.RegisterColibriServer(tcpColServer, colibriService)
 
 	// run inter and intra AS servers
-	topo := itopo.Get()
-	go func() {
+	g.Go(func() error {
 		defer log.HandlePanic()
 		lis := cfgObjs.stack.QUICListener
 		log.Debug("colibri grpc server listening quic", "addr", lis.Addr())
-		if err := colServer.Serve(lis); err != nil {
-			fatal.Fatal(err)
-		}
-	}()
-	go func() {
+		return colServer.Serve(lis)
+	})
+	g.Go(func() error {
 		defer log.HandlePanic()
 		tcpListener := cfgObjs.stack.TCPListener
 		log.Debug("colibri grpc server listening tcp", "tcp_addr", tcpListener.Addr())
-		if err := tcpColServer.Serve(tcpListener); err != nil {
-			fatal.Fatal(err)
-		}
-	}()
+		return tcpColServer.Serve(tcpListener)
+	})
 
 	manager, err := colibriManager(topo, cfgObjs.stack.Router, colibriStore, cfg.Colibri.Reservations)
 	if err != nil {
@@ -181,7 +176,7 @@ func setupColibri(cfg *config.Config, cfgObjs *cfgObjs) (*periodic.Runner, error
 	return manager, nil
 }
 
-func colibriManager(topo topology.Topology, router snet.Router, store reservationstorage.Store,
+func colibriManager(topo *topology.Loader, router snet.Router, store reservationstorage.Store,
 	initialRsvs *coli_conf.Reservations) (*periodic.Runner, error) {
 
 	if store == nil {

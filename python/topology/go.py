@@ -85,6 +85,9 @@ class GoGenerator(object):
                 'prometheus': prom_addr(v['internal_addr'], DEFAULT_BR_PROM_PORT),
             },
             'features': translate_features(self.args.features),
+            'api': {
+                'addr': prom_addr(v['internal_addr'], DEFAULT_BR_PROM_PORT+700)
+            }
         }
         return raw_entry
 
@@ -120,6 +123,7 @@ class GoGenerator(object):
             },
             'tracing': self._tracing_entry(),
             'metrics': self._metrics_entry(infra_elem, CS_PROM_PORT),
+            'api': self._api_entry(infra_elem, CS_PROM_PORT+700),
             'features': translate_features(self.args.features),
         }
         return raw_entry
@@ -261,6 +265,9 @@ class GoGenerator(object):
                 'prometheus': socket_address_str(ip, SCIOND_PROM_PORT)
             },
             'features': translate_features(self.args.features),
+            'api': {
+                'addr': socket_address_str(ip, SD_API_PORT+700),
+            }
         }
         return raw_entry
 
@@ -287,6 +294,8 @@ class GoGenerator(object):
     def _build_disp_conf(self, name, topo_id=None):
         prometheus_addr = prom_addr_dispatcher(self.args.docker, topo_id,
                                                self.args.networks, DISP_PROM_PORT, name)
+        api_addr = prom_addr_dispatcher(self.args.docker, topo_id,
+                                        self.args.networks, DISP_PROM_PORT+700, name)
         return {
             'dispatcher': {
                 'id': name,
@@ -296,6 +305,9 @@ class GoGenerator(object):
                 'prometheus': prometheus_addr,
             },
             'features': translate_features(self.args.features),
+            'api': {
+                'addr': api_addr,
+            },
         }
 
     def _tracing_entry(self):
@@ -318,4 +330,10 @@ class GoGenerator(object):
         a = prom_addr(infra_elem['addr'], base_port)
         return {
             'prometheus': a,
+        }
+
+    def _api_entry(self, infra_elem, base_port):
+        a = prom_addr(infra_elem['addr'], base_port)
+        return {
+            'addr': a,
         }

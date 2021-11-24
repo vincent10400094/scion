@@ -37,6 +37,7 @@ import (
 	"github.com/scionproto/scion/go/lib/serrors"
 	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/snet"
+	"github.com/scionproto/scion/go/lib/snet/metrics"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/util"
 )
@@ -61,15 +62,19 @@ func realMain() int {
 	}
 	defer closeTracer()
 
+	scionConnMetrics := metrics.NewSCIONNetworkMetrics()
+
 	if integration.Mode == integration.ModeServer {
 		server{
 			Timeout: timeout.Duration,
+			Metrics: scionConnMetrics,
 		}.run()
 		return 0
 	}
 	c := client{
 		Daemon:  integration.SDConn(),
 		Timeout: timeout.Duration,
+		Metrics: scionConnMetrics,
 		LocalIA: integration.Local.IA,
 		Remote:  &remote,
 	}
@@ -83,6 +88,7 @@ func addFlags(remote *snet.UDPAddr, timeout *util.DurWrap) {
 
 type server struct {
 	Timeout time.Duration
+	Metrics snet.SCIONNetworkMetrics
 }
 
 func (s server) run() {
@@ -90,13 +96,23 @@ func (s server) run() {
 	defer log.Info("Finished server", "isd_as", integration.Local.IA)
 
 	dispatcher := reliable.NewDispatcher(reliable.DefaultDispPath)
-	scionNet := snet.NewNetwork(integration.Local.IA, dispatcher, daemon.RevHandler{
-		Connector: integration.SDConn()})
+	scionNet := &snet.SCIONNetwork{
+		LocalIA: integration.Local.IA,
+		Dispatcher: &snet.DefaultPacketDispatcherService{
+			Dispatcher: dispatcher,
+			SCMPHandler: &snet.DefaultSCMPHandler{
+				RevocationHandler: daemon.RevHandler{
+					Connector: integration.SDConn(),
+				},
+			},
+		},
+		Metrics: s.Metrics,
+	}
 	conn, err := scionNet.Listen(context.Background(), "udp", integration.Local.Host, addr.SvcNone)
 	if err != nil {
 		integration.LogFatal("Error listening", "err", err)
 	}
-	log.Info("Listening", "local", conn.LocalAddr().String())
+
 	if len(os.Getenv(libint.GoIntegrationEnv)) > 0 {
 		// Needed for integration test ready signal.
 		addr, err := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
@@ -106,6 +122,7 @@ func (s server) run() {
 		fmt.Printf("Port=%d\n", addr.Port)
 		fmt.Printf("%s%s\n\n", libint.ReadySignal, integration.Local.IA)
 	}
+	log.Info("Listening", "local", conn.LocalAddr().String())
 
 	go func() {
 		defer log.HandlePanic()
@@ -172,6 +189,7 @@ func (s server) accept(conn *snet.Conn, buffer []byte) error {
 type client struct {
 	Daemon  daemon.Connector
 	Timeout time.Duration
+	Metrics snet.SCIONNetworkMetrics
 	LocalIA addr.IA
 	Remote  *snet.UDPAddr
 }
@@ -209,8 +227,18 @@ func (c client) run() int {
 	c.Remote.NextHop = pathToDst.UnderlayNextHop()
 	// dial to destination using the first path
 	dispatcher := reliable.NewDispatcher(reliable.DefaultDispPath)
-	scionNet := snet.NewNetwork(integration.Local.IA, dispatcher, daemon.RevHandler{
-		Connector: integration.SDConn()})
+	scionNet := &snet.SCIONNetwork{
+		LocalIA: integration.Local.IA,
+		Dispatcher: &snet.DefaultPacketDispatcherService{
+			Dispatcher: dispatcher,
+			SCMPHandler: &snet.DefaultSCMPHandler{
+				RevocationHandler: daemon.RevHandler{
+					Connector: integration.SDConn(),
+				},
+			},
+		},
+		Metrics: c.Metrics,
+	}
 	log.Debug("dialing with best effort", "addr", c.Remote.String(), "path", c.Remote.Path)
 	conn, err := scionNet.Dial(ctx, "udp", integration.Local.Host, c.Remote, addr.SvcNone)
 	if err != nil {

@@ -40,8 +40,8 @@ type TopologyInformation interface {
 	// HiddenSegmentRegistrationAddresses returns the addresses of the hidden
 	// segment registration services.
 	HiddenSegmentRegistrationAddresses() ([]*net.UDPAddr, error)
-	// ColibriServices returns all the colibri services in the AS.
-	ColibriServices() ([]*net.UDPAddr, error)
+	// ColibriServiceAddresses returns all the colibri services in the AS.
+	ColibriServiceAddresses() []*net.UDPAddr
 }
 
 // Topology implements a service discovery server based on the topology
@@ -127,12 +127,7 @@ func (t Topology) ColibriServices(ctx context.Context, _ *dpb.ColibriServicesReq
 	labels := requestLabels{ReqType: "colibri_services"}
 	logger := log.FromCtx(ctx)
 
-	colSrvs, err := t.Information.ColibriServices()
-	if err != nil {
-		logger.Debug("Failed to list colibri services", "err", err)
-		t.updateTelemetry(span, labels.WithResult(prom.ErrInternal), err)
-		return nil, err
-	}
+	colSrvs := t.Information.ColibriServiceAddresses()
 	reply := &dpb.ColibriServicesResponse{
 		Address: make([]string, len(colSrvs)),
 	}

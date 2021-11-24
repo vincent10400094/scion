@@ -65,14 +65,18 @@ type NetworkConfig struct {
 	// QUIC contains configuration details for QUIC servers. If the listening
 	// address is the empty string, then no QUIC socket is opened.
 	QUIC QUIC
-	// SVCRouter is used to discover the underlay addresses of intra-AS SVC
+	// SVCResolver is used to discover the underlay addresses of intra-AS SVC
 	// servers.
-	SVCRouter messenger.LocalSVCRouter
+	SVCResolver messenger.SVCResolver
 	// SCMPHandler is the SCMP handler to use. This handler is only applied to
 	// client connections. The connection the server listens on will always
 	// ignore SCMP messages. Otherwise, the server will shutdown when receiving
 	// an SCMP error message.
 	SCMPHandler snet.SCMPHandler
+	// Metrics injected into SCIONNetwork.
+	SCIONNetworkMetrics snet.SCIONNetworkMetrics
+	// Metrics injected into DefaultPacketDispatcherService.
+	SCIONPacketConnMetrics snet.SCIONPacketConnMetrics
 }
 
 // QUICStack contains everything to run a QUIC based RPC stack.
@@ -211,7 +215,7 @@ func (nc *NetworkConfig) AddressRewriter(
 	}
 	return &messenger.AddressRewriter{
 		Router:    &snet.BaseRouter{Querier: snet.IntraASPathQuerier{IA: nc.IA}},
-		SVCRouter: nc.SVCRouter,
+		SVCRouter: nc.SVCResolver,
 		Resolver: &svc.Resolver{
 			LocalIA:     nc.IA,
 			ConnFactory: connFactory,
@@ -243,8 +247,9 @@ func (nc *NetworkConfig) initSvcRedirect(quicAddress string, tlsQUICAdress strin
 	}
 	packetDispatcher := svc.NewResolverPacketDispatcher(
 		&snet.DefaultPacketDispatcherService{
-			Dispatcher:  dispatcherService,
-			SCMPHandler: nc.SCMPHandler,
+			Dispatcher:             dispatcherService,
+			SCMPHandler:            nc.SCMPHandler,
+			SCIONPacketConnMetrics: nc.SCIONPacketConnMetrics,
 		},
 		&svc.BaseHandler{
 			Message: svcResolutionReply,
@@ -253,6 +258,7 @@ func (nc *NetworkConfig) initSvcRedirect(quicAddress string, tlsQUICAdress strin
 	network := &snet.SCIONNetwork{
 		LocalIA:    nc.IA,
 		Dispatcher: packetDispatcher,
+		Metrics:    nc.SCIONNetworkMetrics,
 	}
 	conn, err := network.Listen(context.Background(), "udp", nc.Public, addr.SvcWildcard)
 	if err != nil {
@@ -289,8 +295,10 @@ func (nc *NetworkConfig) initQUICSockets(ignorePort bool) (net.PacketConn, net.P
 			// XXX(roosd): This is essential, the server must not read SCMP
 			// errors. Otherwise, the accept loop will always return that error
 			// on every subsequent call to accept.
-			SCMPHandler: ignoreSCMP{},
+			SCMPHandler:            ignoreSCMP{},
+			SCIONPacketConnMetrics: nc.SCIONPacketConnMetrics,
 		},
+		Metrics: nc.SCIONNetworkMetrics,
 	}
 	serverAddr, err := net.ResolveUDPAddr("udp", nc.QUIC.Address)
 	if err != nil {
@@ -307,9 +315,11 @@ func (nc *NetworkConfig) initQUICSockets(ignorePort bool) (net.PacketConn, net.P
 	clientNet := &snet.SCIONNetwork{
 		LocalIA: nc.IA,
 		Dispatcher: &snet.DefaultPacketDispatcherService{
-			Dispatcher:  dispatcherService,
-			SCMPHandler: nc.SCMPHandler,
+			Dispatcher:             dispatcherService,
+			SCMPHandler:            nc.SCMPHandler,
+			SCIONPacketConnMetrics: nc.SCIONPacketConnMetrics,
 		},
+		Metrics: nc.SCIONNetworkMetrics,
 	}
 	// Let the dispatcher decide on the port for the client connection.
 	clientAddr := &net.UDPAddr{
@@ -353,23 +363,6 @@ func NewRouter(localIA addr.IA, sd env.Daemon) (snet.Router, error) {
 		}
 	}
 	return router, nil
-}
-
-func InitInfraEnvironment(topologyPath string) {
-	InitInfraEnvironmentFunc(topologyPath, nil)
-}
-
-// InitInfraEnvironmentFunc sets up the environment by first calling
-// env.RealoadTopology and then the provided function.
-func InitInfraEnvironmentFunc(topologyPath string, f func()) {
-	env.SetupEnv(
-		func() {
-			env.ReloadTopology(topologyPath)
-			if f != nil {
-				f()
-			}
-		},
-	)
 }
 
 // ignoreSCMP ignores all received SCMP packets.
