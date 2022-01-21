@@ -46,7 +46,8 @@ from python.topology.prometheus import (
     DISP_PROM_PORT,
     CO_PROM_PORT,
 )
-from python.topology.topo import DEFAULT_LINK_BW
+
+DEFAULT_COLIBRI_TOTAL_BW = 1000
 
 
 class GoGenArgs(ArgsTopoDicts):
@@ -126,6 +127,8 @@ class GoGenerator(object):
             'api': self._api_entry(infra_elem, CS_PROM_PORT+700),
             'features': translate_features(self.args.features),
         }
+        if ca:
+            raw_entry['ca'] = {'mode': 'in-process'}
         return raw_entry
 
     def generate_co(self):
@@ -176,15 +179,13 @@ class GoGenerator(object):
         topo = self.args.topo_dicts[ia]
         if_ids = {iface for br in topo['border_routers'].values() for iface in br['interfaces']}
         if_ids.add(0)
-        bw = 1000000 # 1000000 Kbps = 1Gbps . This is enough to pass the integration test
-                     # with all local topologies, wide.topo included, at bwclass=13 .
         caps = {
             'ingress_kbps': {},
             'egress_kbps': {},
         }
         for ifid in if_ids:
-            caps['ingress_kbps'][ifid] = bw
-            caps['egress_kbps'][ifid] = bw
+            caps['ingress_kbps'][ifid] = DEFAULT_COLIBRI_TOTAL_BW
+            caps['egress_kbps'][ifid] = DEFAULT_COLIBRI_TOTAL_BW
         return caps
 
     def _build_co_reservations(self, local_ia):

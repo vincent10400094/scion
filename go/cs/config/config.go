@@ -262,7 +262,6 @@ func (cfg *Policies) ConfigName() string {
 
 // CA is the CA configuration.
 type CA struct {
-	config.NoDefaulter
 	// MaxASValidity is the maximum AS certificate lifetime.
 	MaxASValidity util.DurWrap `toml:"max_as_validity,omitempty"`
 	// Mode defines whether the Control Service should handle certificate
@@ -274,14 +273,19 @@ type CA struct {
 	Service CAService `toml:"service,omitempty"`
 }
 
+func (cfg *CA) InitDefaults() {
+	if cfg.Mode == "" {
+		cfg.Mode = Disabled
+	}
+}
+
 func (cfg *CA) Validate() error {
 	if cfg.MaxASValidity.Duration == 0 {
 		cfg.MaxASValidity.Duration = DefaultMaxASValidity
 	}
-	if cfg.Mode == "" {
-		cfg.Mode = InProcess
-	}
 	switch strings.ToLower(string(cfg.Mode)) {
+	case string(Disabled):
+		cfg.Mode = Disabled
 	case string(Delegating):
 		cfg.Mode = Delegating
 	case string(InProcess):
@@ -304,6 +308,7 @@ func (cfg *CA) ConfigName() string {
 type CAMode string
 
 const (
+	Disabled   CAMode = "disabled"
 	Delegating CAMode = "delegating"
 	InProcess  CAMode = "in-process"
 )
