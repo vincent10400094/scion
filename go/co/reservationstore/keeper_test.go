@@ -34,6 +34,7 @@ import (
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/pathpol"
+	"github.com/scionproto/scion/go/lib/slayers/path/scion"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/util"
 	"github.com/scionproto/scion/go/lib/xtest"
@@ -384,7 +385,7 @@ func TestRequestNSuccessfulRsvs(t *testing.T) {
 				})
 			manager.EXPECT().ActivateManyRequest(gomock.Any(), gomock.Any()).AnyTimes()
 			// build requests from paths (tested elsewhere)
-			requests, err := tc.requirements.PrepareSetupRequests(tc.paths, localIA.A,
+			requests, err := tc.requirements.PrepareSetupRequests(tc.paths, localIA.AS(),
 				now, now.Add(time.Hour))
 			require.NoError(t, err)
 			// call and check
@@ -712,7 +713,7 @@ func TestEntryPrepareSetupRequests(t *testing.T) {
 			t.Parallel()
 			now := util.SecsToTime(10)
 			localIA := xtest.MustParseIA("1-ff00:0:1")
-			requests, err := tc.requirements.PrepareSetupRequests(tc.paths, localIA.A,
+			requests, err := tc.requirements.PrepareSetupRequests(tc.paths, localIA.AS(),
 				now, now.Add(time.Hour))
 			require.NoError(t, err)
 			require.Len(t, requests, tc.expected)
@@ -722,6 +723,7 @@ func TestEntryPrepareSetupRequests(t *testing.T) {
 			for _, p := range filtered {
 				transp, err := base.TransparentPathFromInterfaces(p.Metadata().Interfaces)
 				require.NoError(t, err)
+				transp.RawPath = &scion.Raw{} // mimic a path with a SCION rawpath inside
 				k := transp.String()
 				_, ok := bagOfPaths[k]
 				require.False(t, ok, "duplicated path in test", p)
@@ -730,7 +732,8 @@ func TestEntryPrepareSetupRequests(t *testing.T) {
 			for _, req := range requests {
 				// check req.PathToDst is in filtered paths
 				_, ok := bagOfPaths[req.PathAtSource.String()]
-				require.True(t, ok, "len(bag)=%d, bag:%s", len(bagOfPaths), bagOfPaths)
+				require.True(t, ok, "path: %s, len(bag)=%d, bag:%s", req.PathAtSource.String(),
+					len(bagOfPaths), bagOfPaths)
 				delete(bagOfPaths, req.PathAtSource.String())
 				// check the rest of the request
 				require.Equal(t, tc.requirements.minBW, req.MinBW)
