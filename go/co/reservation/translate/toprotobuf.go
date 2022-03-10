@@ -35,8 +35,20 @@ func PBufSetupReq(req *segment.SetupReq) (*colpb.SegmentSetupRequest, error) {
 	}, nil
 }
 
-func PBufE2ESetupReq(req *e2e.SetupReq) (*colpb.E2ESetupRequest, error) {
+func PBufE2ERequest(req *e2e.Request) (*colpb.E2ERequest, error) {
 	base, err := PBufRequest(&req.Request)
+	if err != nil {
+		return nil, err
+	}
+	return &colpb.E2ERequest{
+		Base:    base,
+		SrcHost: req.SrcHost,
+		DstHost: req.DstHost,
+	}, err
+}
+
+func PBufE2ESetupReq(req *e2e.SetupReq) (*colpb.E2ESetupRequest, error) {
+	base, err := PBufE2ERequest(&req.Request)
 	if err != nil {
 		return nil, err
 	}
@@ -56,42 +68,47 @@ func PBufE2ESetupReq(req *e2e.SetupReq) (*colpb.E2ESetupRequest, error) {
 		Params: &colpb.E2ESetupRequest_PathParams{
 			Segments:       segs,
 			CurrentSegment: uint32(req.CurrentSegmentRsvIndex),
-			SrcIa:          uint64(req.SrcIA),
-			SrcHost:        req.SrcHost,
-			DstIa:          uint64(req.DstIA),
-			DstHost:        req.DstHost,
 		},
 		Allocationtrail: trail,
 	}, nil
 }
 
 func PBufSetupResponse(res segment.SegmentSetupResponse) *colpb.SegmentSetupResponse {
-	pbRes := &colpb.SegmentSetupResponse{}
+	msg := &colpb.SegmentSetupResponse{}
 
 	switch r := res.(type) {
 	case *segment.SegmentSetupResponseSuccess:
-		pbRes.SuccessFailure = &colpb.SegmentSetupResponse_Token{
+		msg.Timestamp = util.TimeToSecs(r.Timestamp)
+		msg.Authenticators = PBufAuthenticators(r.AuthenticatedResponse.Authenticators)
+		msg.SuccessFailure = &colpb.SegmentSetupResponse_Token{
 			Token: r.Token.ToRaw(),
 		}
 	case *segment.SegmentSetupResponseFailure:
-		pbRes.SuccessFailure = &colpb.SegmentSetupResponse_Failure_{
+		msg.Timestamp = util.TimeToSecs(r.Timestamp)
+		msg.Authenticators = PBufAuthenticators(r.AuthenticatedResponse.Authenticators)
+		msg.SuccessFailure = &colpb.SegmentSetupResponse_Failure_{
 			Failure: &colpb.SegmentSetupResponse_Failure{
 				Request: PBufSetupRequestParams(r.FailedRequest),
 				Failure: &colpb.Response_Failure{
-					Message: r.Message,
+					Message:    r.Message,
+					FailingHop: uint32(r.FailedStep),
 				},
 			},
 		}
 	}
-	return pbRes
+	return msg
 }
 
 func PBufE2ESetupResponse(res e2e.SetupResponse) *colpb.E2ESetupResponse {
 	msg := &colpb.E2ESetupResponse{}
 	switch t := res.(type) {
 	case *e2e.SetupResponseSuccess:
+		msg.Timestamp = util.TimeToSecs(t.Timestamp)
+		msg.Authenticators = PBufAuthenticators(t.Authenticators)
 		msg.Token = t.Token
 	case *e2e.SetupResponseFailure:
+		msg.Timestamp = util.TimeToSecs(t.Timestamp)
+		msg.Authenticators = PBufAuthenticators(t.Authenticators)
 		trail := make([]*colpb.E2ESetupRequest_E2ESetupBead, len(t.AllocTrail))
 		for i, b := range t.AllocTrail {
 			trail[i] = &colpb.E2ESetupRequest_E2ESetupBead{
@@ -113,10 +130,11 @@ func PBufRequest(req *base.Request) (*colpb.Request, error) {
 		return nil, err
 	}
 	return &colpb.Request{
-		Id:        PBufID(&req.ID),
-		Index:     uint32(req.Index),
-		Timestamp: util.TimeToSecs(req.Timestamp),
-		Path:      p,
+		Id:             PBufID(&req.ID),
+		Index:          uint32(req.Index),
+		Timestamp:      util.TimeToSecs(req.Timestamp),
+		Path:           p,
+		Authenticators: PBufAuthenticators(req.Authenticators),
 	}, err
 }
 
@@ -144,9 +162,15 @@ func PBufSetupRequestParams(req *segment.SetupReq) *colpb.SegmentSetupRequest_Pa
 func PBufResponse(res base.Response) *colpb.Response {
 	switch r := res.(type) {
 	case *base.ResponseSuccess:
-		return &colpb.Response{SuccessFailure: &colpb.Response_Success_{}}
+		return &colpb.Response{
+			Timestamp:      util.TimeToSecs(r.Timestamp),
+			Authenticators: PBufAuthenticators(r.Authenticators),
+			SuccessFailure: &colpb.Response_Success_{},
+		}
 	case *base.ResponseFailure:
 		return &colpb.Response{
+			Timestamp:      util.TimeToSecs(r.Timestamp),
+			Authenticators: PBufAuthenticators(r.Authenticators),
 			SuccessFailure: &colpb.Response_Failure_{
 				Failure: &colpb.Response_Failure{
 					Message:    r.Message,
@@ -189,7 +213,7 @@ func PBufListReservationLooks(
 			Maxbw:          uint32(l.MaxBW),
 			Allocbw:        uint32(l.AllocBW),
 			Splitcls:       uint32(l.Split),
-			Path:           PBufSteps(l.Path),
+			PathSteps:      PBufSteps(l.PathSteps),
 		}
 	}
 	return looks
@@ -199,6 +223,12 @@ func PBufID(id *reservation.ID) *colpb.ReservationID {
 	return &colpb.ReservationID{
 		Asid:   uint64(id.ASID),
 		Suffix: append(id.Suffix[:0:0], id.Suffix...),
+	}
+}
+
+func PBufAuthenticators(auths [][]byte) *colpb.Authenticators {
+	return &colpb.Authenticators{
+		Macs: auths,
 	}
 }
 

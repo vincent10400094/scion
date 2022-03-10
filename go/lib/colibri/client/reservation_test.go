@@ -23,11 +23,14 @@ import (
 	"github.com/golang/mock/gomock"
 	"github.com/stretchr/testify/require"
 
+	// TODO(juagargi) unify test packages
 	"github.com/scionproto/scion/go/lib/colibri"
 	"github.com/scionproto/scion/go/lib/colibri/client/sorting"
 	ct "github.com/scionproto/scion/go/lib/colibri/coltest"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/daemon/mock_daemon"
+	"github.com/scionproto/scion/go/lib/drkey"
+	dkt "github.com/scionproto/scion/go/lib/drkey/test"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/snet"
 	snetpath "github.com/scionproto/scion/go/lib/snet/path"
@@ -38,9 +41,16 @@ func TestNewReservation(t *testing.T) {
 	ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
 	defer cancelF()
 
-	srcIA := xtest.MustParseIA("1-ff00:0:111")
-	dstIA := xtest.MustParseIA("1-ff00:0:112")
-	dstHost := xtest.MustParseIP(t, "192.0.2.10")
+	strSrcIA := "1-ff00:0:111"
+	strSrcHost := "192.0.2.1"
+	strDstIA := "1-ff00:0:112"
+	strDstHost := "192.0.2.10"
+
+	srcIA := xtest.MustParseIA(strSrcIA)
+	srcHost := xtest.MustParseIP(t, strSrcHost)
+	dstIA := xtest.MustParseIA(strDstIA)
+	dstHost := xtest.MustParseIP(t, strDstHost)
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	daemon := mock_daemon.NewMockConnector(ctrl)
@@ -48,16 +58,18 @@ func TestNewReservation(t *testing.T) {
 		ct.NewStitchableSegments("1-ff00:0:111", "1-ff00:0:112",
 			ct.WithUpSegs(1),
 		), nil)
+	mockDRKeys(t, daemon, strSrcIA, strSrcHost)
 
-	rsv, err := NewReservation(ctx, daemon, srcIA, dstIA, dstHost, 11, 0, sorting.ByExpiration)
+	rsv, err := NewReservation(ctx, daemon, srcIA, srcHost, dstIA, dstHost, 11, 0,
+		sorting.ByExpiration)
 	require.NoError(t, err)
 	require.True(t, rsv.request.Id.IsE2EID())
 	require.Equal(t, dstIA, rsv.dstIA)
 	require.Nil(t, rsv.colibriPath) // not negotiated yet
 
 	require.NotNil(t, rsv.request) // should be populated
-	require.Equal(t, dstIA, rsv.request.DstIA)
-	require.Equal(t, srcIA, rsv.request.SrcIA)
+	require.Equal(t, dstIA, rsv.request.Path.DstIA())
+	require.Equal(t, srcIA, rsv.request.Path.SrcIA())
 	require.Greater(t, len(rsv.request.Segments), 0)
 }
 
@@ -65,9 +77,16 @@ func TestReservationOpen(t *testing.T) {
 	ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
 	defer cancelF()
 
-	srcIA := xtest.MustParseIA("1-ff00:0:111")
-	dstIA := xtest.MustParseIA("1-ff00:0:112")
-	dstHost := xtest.MustParseIP(t, "192.0.2.10")
+	strSrcIA := "1-ff00:0:111"
+	strSrcHost := "192.0.2.1"
+	strDstIA := "1-ff00:0:112"
+	strDstHost := "192.0.2.10"
+
+	srcIA := xtest.MustParseIA(strSrcIA)
+	srcHost := xtest.MustParseIP(t, strSrcHost)
+	dstIA := xtest.MustParseIA(strDstIA)
+	dstHost := xtest.MustParseIP(t, strDstHost)
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	daemon := mock_daemon.NewMockConnector(ctrl)
@@ -75,8 +94,10 @@ func TestReservationOpen(t *testing.T) {
 		ct.NewStitchableSegments("1-ff00:0:111", "1-ff00:0:112",
 			ct.WithUpSegs(1),
 		), nil)
+	mockDRKeys(t, daemon, strSrcIA, strSrcHost)
 
-	rsv, err := NewReservation(ctx, daemon, srcIA, dstIA, dstHost, 11, 0, sorting.ByExpiration)
+	rsv, err := NewReservation(ctx, daemon, srcIA, srcHost, dstIA, dstHost, 11, 0,
+		sorting.ByExpiration)
 	require.NoError(t, err)
 
 	// modify the global task duration for the test
@@ -89,7 +110,9 @@ func TestReservationOpen(t *testing.T) {
 	}
 	timesCalled := 0
 	daemon.EXPECT().ColibriSetupRsv(gomock.Any(), gomock.Any()).AnyTimes().
-		DoAndReturn(func(_ context.Context, req *colibri.E2EReservationSetup) (snet.Path, error) {
+		DoAndReturn(func(_ context.Context, req *colibri.E2EReservationSetup) (
+			*colibri.E2EResponse, error) {
+
 			// check that the index increments monotonically
 			timesAsIndex := reservation.IndexNumber(0).Add(reservation.IndexNumber(timesCalled))
 			require.Equal(t, timesAsIndex, req.Index)
@@ -99,8 +122,9 @@ func TestReservationOpen(t *testing.T) {
 				p = testPaths[timesCalled]
 			}
 			timesCalled++
-			return p, nil
-
+			return &colibri.E2EResponse{
+				ColibriPath: p,
+			}, nil
 		})
 
 	err = rsv.Open(ctx, nil, func(r *Reservation, err error) *colibri.FullTrip {
@@ -117,10 +141,10 @@ func TestReservationOpen(t *testing.T) {
 	require.Equal(t, testPaths[2], rsv.colibriPath) // last path available before the error
 
 	// stop and check
-	daemon.EXPECT().ColibriCleanupRsv(gomock.Any(), gomock.Any(), gomock.Any()).DoAndReturn(
-		func(_ context.Context, id *reservation.ID, idx reservation.IndexNumber) error {
-			require.Equal(t, rsv.request.Id, *id)
-			require.Equal(t, reservation.NewIndexNumber(timesCalled-1), idx)
+	daemon.EXPECT().ColibriCleanupRsv(gomock.Any(), gomock.Any()).DoAndReturn(
+		func(_ context.Context, req *colibri.BaseRequest) error {
+			require.Equal(t, rsv.request.Id, req.Id)
+			require.Equal(t, reservation.NewIndexNumber(timesCalled-1), req.Index)
 			return nil
 		})
 	err = rsv.Close(ctx)
@@ -131,9 +155,16 @@ func TestReservationOpenSuccessfully(t *testing.T) {
 	ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
 	defer cancelF()
 
-	srcIA := xtest.MustParseIA("1-ff00:0:111")
-	dstIA := xtest.MustParseIA("1-ff00:0:112")
-	dstHost := xtest.MustParseIP(t, "192.0.2.10")
+	strSrcIA := "1-ff00:0:111"
+	strSrcHost := "192.0.2.1"
+	strDstIA := "1-ff00:0:112"
+	strDstHost := "192.0.2.10"
+
+	srcIA := xtest.MustParseIA(strSrcIA)
+	srcHost := xtest.MustParseIP(t, strSrcHost)
+	dstIA := xtest.MustParseIA(strDstIA)
+	dstHost := xtest.MustParseIP(t, strDstHost)
+
 	ctrl := gomock.NewController(t)
 	defer ctrl.Finish()
 	daemon := mock_daemon.NewMockConnector(ctrl)
@@ -141,8 +172,10 @@ func TestReservationOpenSuccessfully(t *testing.T) {
 		ct.NewStitchableSegments("1-ff00:0:111", "1-ff00:0:112",
 			ct.WithUpSegs(1),
 		), nil)
+	mockDRKeys(t, daemon, strSrcIA, strSrcHost)
 
-	rsv, err := NewReservation(ctx, daemon, srcIA, dstIA, dstHost, 11, 0, sorting.ByExpiration)
+	rsv, err := NewReservation(ctx, daemon, srcIA, srcHost, dstIA, dstHost, 11, 0,
+		sorting.ByExpiration)
 	require.NoError(t, err)
 	// modify the global task duration for the test
 	rsv.e2eRenewalTaskDuration = reservation.TicksInE2ERsv * 4 * time.Millisecond / 2 // 16ms
@@ -152,9 +185,13 @@ func TestReservationOpenSuccessfully(t *testing.T) {
 	}
 	timesCalled := 0
 	daemon.EXPECT().ColibriSetupRsv(gomock.Any(), gomock.Any()).AnyTimes().
-		DoAndReturn(func(_ context.Context, req *colibri.E2EReservationSetup) (snet.Path, error) {
+		DoAndReturn(func(_ context.Context, req *colibri.E2EReservationSetup) (
+			*colibri.E2EResponse, error) {
+
 			timesCalled++
-			return returnPath, nil
+			return &colibri.E2EResponse{
+				ColibriPath: returnPath,
+			}, nil
 		})
 
 	renewalsCalled := 0
@@ -172,7 +209,7 @@ func TestReservationOpenSuccessfully(t *testing.T) {
 	require.Equal(t, timesCalled-1, renewalsCalled)
 
 	// stop and check
-	daemon.EXPECT().ColibriCleanupRsv(gomock.Any(), gomock.Any(), gomock.Any()).Return(nil)
+	daemon.EXPECT().ColibriCleanupRsv(gomock.Any(), gomock.Any()).Return(nil)
 	err = rsv.Close(ctx)
 	require.NoError(t, err)
 }
@@ -181,9 +218,16 @@ func TestReservationFailOnRenewal(t *testing.T) {
 	ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
 	defer cancelF()
 
-	srcIA := xtest.MustParseIA("1-ff00:0:111")
-	dstIA := xtest.MustParseIA("1-ff00:0:112")
-	dstHost := xtest.MustParseIP(t, "192.0.2.10")
+	strSrcIA := "1-ff00:0:111"
+	strSrcHost := "192.0.2.1"
+	strDstIA := "1-ff00:0:112"
+	strDstHost := "192.0.2.10"
+
+	srcIA := xtest.MustParseIA(strSrcIA)
+	srcHost := xtest.MustParseIP(t, strSrcHost)
+	dstIA := xtest.MustParseIA(strDstIA)
+	dstHost := xtest.MustParseIP(t, strDstHost)
+
 	stitchables := ct.NewStitchableSegments("1-ff00:0:111", "1-ff00:0:112",
 		ct.WithUpSegs(1, 1), // two up
 	)
@@ -192,12 +236,11 @@ func TestReservationFailOnRenewal(t *testing.T) {
 	daemon := mock_daemon.NewMockConnector(ctrl)
 	daemon.EXPECT().ColibriListRsvs(gomock.Any(), gomock.Any()).Return(
 		stitchables, nil)
-	ct.NewStitchableSegments("1-ff00:0:111", "1-ff00:0:112",
-		ct.WithUpSegs(1),
-	)
+	mockDRKeys(t, daemon, strSrcIA, strSrcHost)
 
 	trips := colibri.CombineAll(stitchables)
-	rsv, err := NewReservation(ctx, daemon, srcIA, dstIA, dstHost, 11, 0) // unsorted; will use [0]
+	// unsorted; will use [0] :
+	rsv, err := NewReservation(ctx, daemon, srcIA, srcHost, dstIA, dstHost, 11, 0)
 	require.NoError(t, err)
 
 	// modify the global task duration for the test
@@ -214,19 +257,25 @@ func TestReservationFailOnRenewal(t *testing.T) {
 	timesCalledAfterFailure := 0
 	doFailAgain := false
 	daemon.EXPECT().ColibriSetupRsv(gomock.Any(), gomock.Any()).AnyTimes().
-		DoAndReturn(func(_ context.Context, req *colibri.E2EReservationSetup) (snet.Path, error) {
+		DoAndReturn(func(_ context.Context, req *colibri.E2EReservationSetup) (
+			*colibri.E2EResponse, error) {
+
 			timesCalled++
 			if everFailed {
 				timesCalledAfterFailure++
 				if doFailAgain {
 					return nil, serrors.New("mock error 2")
 				}
-				return testPathAfterFailure, nil
+				return &colibri.E2EResponse{
+					ColibriPath: testPathAfterFailure,
+				}, nil
 			}
 			if timesCalled > len(testPaths) {
 				return nil, serrors.New("mock error 1")
 			}
-			return testPaths[timesCalled-1], nil
+			return &colibri.E2EResponse{
+				ColibriPath: testPaths[timesCalled-1],
+			}, nil
 		})
 
 	waitForFallback := sync.WaitGroup{}
@@ -275,4 +324,21 @@ func TestReservationFailOnRenewal(t *testing.T) {
 	require.Equal(t, true, alwaysFailing)
 	// because it failed:
 	require.Nil(t, rsv.runner)
+}
+
+func mockDRKeys(t *testing.T, daemon *mock_daemon.MockConnector, srcIA, srcHost string) {
+	t.Helper()
+	mockKeys := dkt.MockKeys1SlowSideWithHost(t, srcIA, srcHost,
+		"1-ff00:0:111",
+		"1-ff00:0:110",
+		"1-ff00:0:112",
+	)
+	daemon.EXPECT().DRKeyGetLvl2Key(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(func(_ context.Context, meta drkey.Lvl2Meta, ts time.Time) (
+			drkey.Lvl2Key, error) {
+
+			k, ok := dkt.GetKey(mockKeys, meta.SrcIA, meta.DstIA)
+			require.True(t, ok, "not found %s", meta.SrcIA)
+			return k, nil
+		})
 }

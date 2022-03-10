@@ -29,7 +29,6 @@ import (
 	"github.com/scionproto/scion/go/co/reservation/segment"
 	st "github.com/scionproto/scion/go/co/reservation/segmenttest"
 	te "github.com/scionproto/scion/go/co/reservation/test"
-	mockstore "github.com/scionproto/scion/go/co/reservationstorage/mock_reservationstorage"
 	mockmanager "github.com/scionproto/scion/go/co/reservationstore/mock_reservationstore"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
@@ -103,6 +102,7 @@ func TestKeepOneShot(t *testing.T) {
 							st.WithExpiration(tomorrow)),
 						st.AddIndex(1, st.WithBW(12, 24, 0),
 							st.WithExpiration(tomorrow.Add(24*time.Hour))),
+						st.ConfirmAllIndices(),
 						st.WithActiveIndex(0),
 						st.WithTrafficSplit(2),
 						st.WithEndProps(endProps1)),
@@ -113,6 +113,7 @@ func TestKeepOneShot(t *testing.T) {
 							st.WithExpiration(tomorrow)),
 						st.AddIndex(1, st.WithBW(12, 24, 0),
 							st.WithExpiration(tomorrow.Add(24*time.Hour))),
+						st.ConfirmAllIndices(),
 						st.WithActiveIndex(0),
 						st.WithTrafficSplit(2),
 						st.WithEndProps(endProps1)),
@@ -166,15 +167,13 @@ func TestKeepOneShot(t *testing.T) {
 				manager: manager,
 				entries: tc.destinations,
 			}
-			store := mockStore(ctrl)
-			store.EXPECT().GetReservationsAtSource(gomock.Any(), gomock.Any()).
+			manager.EXPECT().GetReservationsAtSource(gomock.Any(), gomock.Any()).
 				Times(len(tc.destinations)).DoAndReturn(
 				func(_ context.Context, dstIA addr.IA) (
 					[]*segment.Reservation, error) {
 
 					return tc.reservations[dstIA], nil
 				})
-			manager.EXPECT().Store().AnyTimes().Return(store)
 			manager.EXPECT().PathsTo(gomock.Any(),
 				gomock.Any()).Times(len(tc.destinations)).DoAndReturn(
 				func(_ context.Context, dstIA addr.IA) ([]snet.Path, error) {
@@ -608,6 +607,7 @@ func TestRequirementsCompliance(t *testing.T) {
 			rsv: st.NewRsv(st.WithPath(0, "1-ff00:0:1", 1, 1, "1-ff00:0:2", 0),
 				st.WithPathType(reservation.UpPath),
 				st.AddIndex(0, st.WithBW(12, 24, 0), st.WithExpiration(tomorrow)),
+				st.ConfirmAllIndices(),
 				st.WithTrafficSplit(2),
 				st.WithEndProps(reqs.endProps)),
 			atLeastUntil:       now,
@@ -980,8 +980,4 @@ func mockManager(ctrl *gomock.Controller, now time.Time,
 	m.EXPECT().LocalIA().AnyTimes().Return(localIA)
 	m.EXPECT().Now().AnyTimes().Return(now)
 	return m
-}
-
-func mockStore(ctrl *gomock.Controller) *mockstore.MockStore {
-	return mockstore.NewMockStore(ctrl)
 }

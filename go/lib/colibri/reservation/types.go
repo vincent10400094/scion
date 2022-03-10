@@ -39,15 +39,17 @@ type ID struct {
 }
 
 const (
-	IDSegLen = 4
-	IDE2ELen = 12
+	IDSuffixSegLen = 4
+	IDSuffixE2ELen = 12
+	IDSegLen       = 6 + IDSuffixSegLen
+	IDE2ELen       = 6 + IDSuffixE2ELen
 )
 
 var _ io.Reader = (*ID)(nil)
 
 // NewID returns a new ID
 func NewID(AS addr.AS, suffix []byte) (*ID, error) {
-	if len(suffix) != IDSegLen && len(suffix) != IDE2ELen {
+	if len(suffix) != IDSuffixSegLen && len(suffix) != IDSuffixE2ELen {
 		return nil, serrors.New("wrong suffix length, should be 4 or 12", "actual_len", len(suffix))
 	}
 	id := ID{
@@ -91,7 +93,7 @@ func (id *ID) Equal(other *ID) bool {
 }
 
 func (id *ID) Validate() error {
-	if len(id.Suffix) != 4 && len(id.Suffix) != 10 {
+	if len(id.Suffix) != IDSuffixSegLen && len(id.Suffix) != IDSuffixE2ELen {
 		return serrors.New("bad suffix", "suffix", hex.EncodeToString(id.Suffix))
 	}
 	return nil
@@ -108,11 +110,11 @@ func (id *ID) Copy() *ID {
 }
 
 func (id *ID) IsSegmentID() bool {
-	return len(id.Suffix) == IDSegLen
+	return len(id.Suffix) == IDSuffixSegLen
 }
 
 func (id *ID) IsE2EID() bool {
-	return len(id.Suffix) == IDE2ELen
+	return len(id.Suffix) == IDSuffixE2ELen
 }
 
 // Read serializes this ID into the buffer.
@@ -705,4 +707,49 @@ func (t *Token) ToRaw() []byte {
 		t.Read(buff) // safely ignore errors as they can only come from buffer size
 	}
 	return buff
+}
+
+// AddNewHopField adds a new hopfield to the token. Depending on the type of the path (up,
+// down, core, etc) the added hop field will end up at the beginning or end of the list.
+// The function returns a pointer to the new (copied) hop field inside the token.
+func (t *Token) AddNewHopField(hf *HopField) *HopField {
+	switch t.InfoField.PathType {
+	case DownPath:
+		t.HopFields = append(t.HopFields, *hf)
+		hf = &t.HopFields[len(t.HopFields)-1]
+	case UpPath, CorePath, E2EPath:
+		t.HopFields = append([]HopField{*hf}, t.HopFields...)
+		hf = &t.HopFields[0]
+	default:
+		panic(fmt.Sprintf("unknown path type %v", t.InfoField.PathType))
+	}
+	return hf
+}
+
+// GetFirstNHopFields returns the n first (*in order of addition*) hop fields of the token.
+// Depending on the path type (up, down, etc) thoese will be located at the beginning, or at the
+// end of the hop field list in the token.
+// If the existing hop fields are less than n, only those are returned.
+func (t *Token) GetFirstNHopFields(n int) []HopField {
+	if t == nil || len(t.HopFields) == 0 || n <= 0 {
+		return nil
+	}
+	var begin, end int
+	n = min(n, len(t.HopFields))
+	switch t.InfoField.PathType {
+	case DownPath:
+		begin, end = 0, n
+	case UpPath, CorePath, E2EPath:
+		begin, end = len(t.HopFields)-n, len(t.HopFields)
+	default:
+		panic(fmt.Sprintf("unknown path type %v", t.InfoField.PathType))
+	}
+	return t.HopFields[begin:end]
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }

@@ -15,11 +15,14 @@
 package reservation
 
 import (
+	"encoding/binary"
 	"time"
 
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	col "github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/serrors"
+	"github.com/scionproto/scion/go/lib/slayers/path/empty"
+	"github.com/scionproto/scion/go/lib/util"
 )
 
 type MsgId struct {
@@ -28,19 +31,38 @@ type MsgId struct {
 	Timestamp time.Time
 }
 
+func (m *MsgId) Len() int {
+	return m.ID.Len() + 1 + 4
+}
+
+func (m *MsgId) Serialize(buff []byte) {
+	m.ID.Read(buff)
+	buff[m.ID.Len()] = byte(m.Index)
+	binary.BigEndian.PutUint32(buff[m.ID.Len()+1:], util.TimeToSecs(m.Timestamp))
+}
+
 // Request is the base struct for any type of COLIBRI segment request.
 // It contains a reference to the reservation it requests, or nil if not yet created.
 type Request struct {
 	MsgId
-	Path *TransparentPath // the path to the destination. It represents the hops of the reservation.
+	Path           *TransparentPath // the path to the destination (hops of the reservation).
+	Authenticators [][]byte         // one MAC per transit AS created by the initiator AS
 }
 
 // NewRequest constructs the segment Request type.
+// If the authenticators argument is nil, a new and empty authenticators field is constructed.
 func NewRequest(ts time.Time, id *reservation.ID, idx reservation.IndexNumber,
-	path *TransparentPath) (*Request, error) {
+	path *TransparentPath) *Request {
 
-	if id == nil {
-		return nil, serrors.New("new segment request with nil ID")
+	var authenticators [][]byte
+	if path == nil {
+		path = &TransparentPath{}
+	}
+	if path.RawPath == nil {
+		path.RawPath = &empty.Path{}
+	}
+	if len(path.Steps) > 0 {
+		authenticators = make([][]byte, len(path.Steps)-1)
 	}
 	return &Request{
 		MsgId: MsgId{
@@ -48,8 +70,9 @@ func NewRequest(ts time.Time, id *reservation.ID, idx reservation.IndexNumber,
 			ID:        *id,
 			Index:     idx,
 		},
-		Path: path,
-	}, nil
+		Path:           path,
+		Authenticators: authenticators,
+	}
 }
 
 // Validate ensures the data in the request is consistent. Calling methods on the request
@@ -58,14 +81,24 @@ func (r *Request) Validate() error {
 	if err := r.Path.Validate(); err != nil {
 		return serrors.WrapStr("bad path in request", err)
 	}
-	return r.ValidateIgnorePath()
-}
-
-func (r *Request) ValidateIgnorePath() error {
+	if len(r.Authenticators) != len(r.Path.Steps)-1 {
+		return serrors.New("inconsistent number of authenticators",
+			"auth_count", len(r.Authenticators), "path_len", len(r.Path.Steps))
+	}
 	if r.ID.ASID == 0 {
 		return serrors.New("bad AS id in request", "asid", r.ID.ASID)
 	}
 	return nil
+}
+
+func (r *Request) Len() int {
+	return r.MsgId.Len() + r.Path.Len()
+}
+
+func (r *Request) Serialize(buff []byte, options SerializeOptions) {
+	offset := r.MsgId.Len()
+	r.MsgId.Serialize(buff[:offset])
+	r.Path.Serialize(buff[offset:], options)
 }
 
 func (r *Request) IsFirstAS() bool {
@@ -90,20 +123,69 @@ func (r *Request) Egress() uint16 {
 	return p.Steps[p.CurrentStep].Egress
 }
 
-type Response interface {
-	isResponse_SuccessFailure()
-	Success() bool
+// CurrentValidatorField returns the validator field that contains the MAC used to authenticate
+// the request by the initiator AS, for the current in-transit AS.
+// Note that there doesn't exist a field for the initiator AS, as it is itself that authenticates.
+func (r *Request) CurrentValidatorField() []byte {
+	if r.Path.CurrentStep == 0 {
+		return nil
+	}
+	return r.Authenticators[r.Path.CurrentStep-1]
 }
 
-type ResponseSuccess struct{}
+type Response interface {
+	isResponse_SuccessFailure()
+
+	GetAuthenticators() [][]byte
+	SetAuthenticator(currentStep int, authenticator []byte)
+	Success() bool
+	ToRaw() []byte
+}
+
+type AuthenticatedResponse struct {
+	Timestamp      time.Time
+	Authenticators [][]byte
+}
+
+func (r *AuthenticatedResponse) Serialize(buff []byte) {
+	binary.BigEndian.PutUint32(buff, util.TimeToSecs(r.Timestamp))
+}
+func (r *AuthenticatedResponse) GetAuthenticators() [][]byte {
+	return r.Authenticators
+}
+
+// SetAuthenticator sets the authenticator to the step-1 position. This is so because
+// it expects to have one less authenticator than steps present in the path.
+func (r *AuthenticatedResponse) SetAuthenticator(currentStep int, authenticator []byte) {
+	r.Authenticators[currentStep-1] = authenticator
+}
+
+type ResponseSuccess struct {
+	AuthenticatedResponse
+}
 
 func (r *ResponseSuccess) isResponse_SuccessFailure() {}
 func (r *ResponseSuccess) Success() bool              { return true }
+func (r *ResponseSuccess) ToRaw() []byte {
+	buff := make([]byte, 5)
+	buff[0] = 0
+	r.Serialize(buff[1:5])
+	return buff
+}
 
 type ResponseFailure struct {
-	Message    string
+	AuthenticatedResponse
 	FailedStep uint8
+	Message    string
 }
 
 func (r *ResponseFailure) isResponse_SuccessFailure() {}
 func (r *ResponseFailure) Success() bool              { return false }
+func (r *ResponseFailure) ToRaw() []byte {
+	buff := make([]byte, 1+4+1+len(r.Message)) // marker + timestamp + failed_step + message
+	buff[0] = 1
+	r.Serialize(buff[1:5])
+	buff[5] = r.FailedStep
+	copy(buff[6:], []byte(r.Message))
+	return buff
+}

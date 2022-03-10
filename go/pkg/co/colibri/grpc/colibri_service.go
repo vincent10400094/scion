@@ -45,7 +45,7 @@ var _ colpb.ColibriServiceServer = (*ColibriService)(nil)
 func (s *ColibriService) SegmentSetup(ctx context.Context, msg *colpb.SegmentSetupRequest) (
 	*colpb.SegmentSetupResponse, error) {
 
-	msg.Base.Path.CurrentStep++
+	msg.Base.Path.CurrentStep++ // TODO(juagargi) do this in the app layer (instead of pbuf msg)
 	// path, err := extractPath(ctx)
 	// if err != nil {
 	// 	log.Error("setup segment", "err", err)
@@ -168,7 +168,7 @@ func (s *ColibriService) ListReservations(ctx context.Context, msg *colpb.ListRe
 func (s *ColibriService) E2ESetup(ctx context.Context, msg *colpb.E2ESetupRequest) (
 	*colpb.E2ESetupResponse, error) {
 
-	msg.Base.Path.CurrentStep++
+	msg.Base.Base.Path.CurrentStep++
 	req, err := translate.E2ESetupRequest(msg)
 	if err != nil {
 		log.Error("translating e2e setup", "err", err)
@@ -185,8 +185,8 @@ func (s *ColibriService) E2ESetup(ctx context.Context, msg *colpb.E2ESetupReques
 func (s *ColibriService) CleanupE2EIndex(ctx context.Context, msg *colpb.CleanupE2EIndexRequest) (
 	*colpb.CleanupE2EIndexResponse, error) {
 
-	msg.Base.Path.CurrentStep++
-	req, err := translate.Request(msg.Base)
+	msg.Base.Base.Path.CurrentStep++
+	req, err := translate.E2ERequest(msg.Base)
 	if err != nil {
 		log.Error("error unmarshalling", "err", err)
 		return nil, err
@@ -225,30 +225,33 @@ func (s *ColibriService) ListStitchables(ctx context.Context, msg *colpb.ListSti
 func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.SetupReservationRequest) (
 	*colpb.SetupReservationResponse, error) {
 
-	clientAddr, err := checkLocalCaller(ctx)
+	_, err := checkLocalCaller(ctx)
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now()
+
+	// TODO(juagargi) validate the incoming request
 	// build a valid E2E setup request now and query the store with it
 	pbReq := &colpb.E2ESetupRequest{
-		Base: &colpb.Request{
-			Id:        msg.Id,
-			Index:     msg.Index,
-			Timestamp: util.TimeToSecs(now),
-			Path:      &colpb.TransparentPath{},
+		Base: &colpb.E2ERequest{
+			Base: &colpb.Request{
+				Id:             msg.Id,
+				Index:          msg.Index,
+				Timestamp:      msg.Timestamp,
+				Path:           &colpb.TransparentPath{Steps: msg.PathSteps},
+				Authenticators: &colpb.Authenticators{},
+			},
+			SrcHost: msg.SrcHost,
+			DstHost: msg.DstHost,
 		},
 		RequestedBw: msg.RequestedBw,
 		Params: &colpb.E2ESetupRequest_PathParams{
 			Segments:       msg.Segments,
 			CurrentSegment: 0,
-			SrcIa:          msg.SrcIa,
-			SrcHost:        clientAddr.IP,
-			DstIa:          msg.DstIa,
-			DstHost:        msg.DstHost,
 		},
 		Allocationtrail: nil,
 	}
+	pbReq.Base.Base.Authenticators.Macs = msg.Authenticators.Macs
 	req, err := translate.E2ESetupRequest(pbReq)
 	if err != nil {
 		log.Error("translating initial E2E setup from daemon to service", "err", err)
@@ -267,7 +270,9 @@ func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.SetupR
 			}
 			failedStep = uint32(failure.FailedStep)
 		}
+		// TODO(juagargi) unify criteria in all RPCs: when error, return error or failure message?
 		return &colpb.SetupReservationResponse{
+			// Authenticators: &colpb.Authenticators{Macs: fai},
 			Failure: &colpb.SetupReservationResponse_Failure{
 				ErrorMessage: err.Error(),
 				FailedStep:   failedStep,
@@ -275,9 +280,12 @@ func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.SetupR
 			},
 		}, nil
 	}
-	pbMsg := &colpb.SetupReservationResponse{}
+	pbMsg := &colpb.SetupReservationResponse{
+		Authenticators: &colpb.Authenticators{},
+	}
 	switch res := res.(type) {
 	case *e2e.SetupResponseFailure:
+		pbMsg.Authenticators.Macs = res.Authenticators
 		trail := make([]uint32, len(res.AllocTrail))
 		for i, b := range res.AllocTrail {
 			trail[i] = uint32(b)
@@ -288,6 +296,7 @@ func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.SetupR
 			AllocTrail:   trail,
 		}
 	case *e2e.SetupResponseSuccess:
+		pbMsg.Authenticators.Macs = res.Authenticators
 		token, err := reservation.TokenFromRaw(res.Token)
 		if err != nil {
 			return nil, serrors.WrapStr("decoding token in colibri service", err)
@@ -318,17 +327,18 @@ func (s *ColibriService) CleanupReservation(ctx context.Context,
 	if _, err := checkLocalCaller(ctx); err != nil {
 		return nil, err
 	}
-	pbReq := &colpb.Request{
-		Id:        msg.Id,
-		Index:     msg.Index,
-		Timestamp: util.TimeToSecs(time.Now()),
-		Path:      &colpb.TransparentPath{},
-	}
-	req, err := translate.Request(pbReq)
+	p, err := translate.TransparentPath(msg.Base.Path)
 	if err != nil {
-		log.Error("translating initial E2E cleanup from daemon to service", "err", err)
 		return nil, err
 	}
+	req := &e2e.Request{
+		Request: *base.NewRequest(time.Now(), translate.ID(msg.Base.Id),
+			reservation.IndexNumber(msg.Base.Index), p),
+		SrcHost: msg.SrcHost,
+		DstHost: msg.DstHost,
+	}
+	req.Authenticators = msg.Base.Authenticators.Macs
+
 	res, err := s.Store.CleanupE2EReservation(ctx, req)
 	if err != nil {
 		var failedStep uint32

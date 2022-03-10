@@ -67,7 +67,7 @@ var _ snet.Path = (*Reservation)(nil)
 // "more important" to the sorting).
 func NewReservation(ctx context.Context,
 	daemon daemon.Connector,
-	localIA, dstIA addr.IA, dstHost net.IP,
+	localIA addr.IA, srcHost net.IP, dstIA addr.IA, dstHost net.IP,
 	bw reservation.BWCls, index reservation.IndexNumber,
 	lessFcns ...LessFunction) (*Reservation, error) {
 
@@ -89,20 +89,26 @@ func NewReservation(ctx context.Context,
 		})
 	}
 	trip := trips[0]
-	// 3. create setup reservation
+
+	// 3. create reservation setup request
 	setupReq := &colibri.E2EReservationSetup{
-		Id: reservation.ID{
-			ASID:   localIA.AS(),
-			Suffix: make([]byte, reservation.IDE2ELen),
+		BaseRequest: colibri.BaseRequest{
+			Id: reservation.ID{
+				ASID:   localIA.AS(),
+				Suffix: make([]byte, reservation.IDSuffixE2ELen),
+			},
+			Index:   index,
+			SrcHost: srcHost,
+			DstHost: dstHost,
+			Path:    trip.Path(),
 		},
-		SrcIA:       localIA,
-		DstIA:       dstIA,
-		DstHost:     dstHost,
-		Index:       index,
-		Segments:    trip.Segments(),
 		RequestedBW: bw,
+		Segments:    trip.Segments(),
 	}
 	rand.Read(setupReq.Id.Suffix) // random suffix
+
+	// 4. compute authenticators
+	err = setupReq.CreateAuthenticators(ctx, daemon)
 	return &Reservation{
 		daemon:      daemon,
 		dstIA:       dstIA,
@@ -112,7 +118,7 @@ func NewReservation(ctx context.Context,
 		// Since it's not exported, the compiler should see it's not reassigned via SSA, and just
 		// treat it as a constant when not running a test.
 		e2eRenewalTaskDuration: reservation.TicksInE2ERsv * reservation.DurationPerTick / 2,
-	}, nil
+	}, err
 }
 
 // Open periodically sets up/renews the reservation. Returns error iff the setup failed.
@@ -129,10 +135,11 @@ func (r *Reservation) Open(ctx context.Context,
 	}
 
 	var err error
-	r.colibriPath, err = r.daemon.ColibriSetupRsv(ctx, r.request)
+	res, err := r.daemon.ColibriSetupRsv(ctx, r.request)
 	if err != nil {
 		return serrors.WrapStr("first reservation setup failed", err)
 	}
+	r.colibriPath = res.ColibriPath
 	if successFcn == nil {
 		successFcn = func(*Reservation) {}
 	}
@@ -156,7 +163,7 @@ func (r *Reservation) Close(ctx context.Context) error {
 	r.runner.Stop()
 	r.runner = nil
 
-	return r.daemon.ColibriCleanupRsv(ctx, &r.request.Id, r.request.Index)
+	return r.daemon.ColibriCleanupRsv(ctx, &r.request.BaseRequest)
 }
 
 func (r *Reservation) CurrentTrip() colibri.FullTrip {
@@ -195,9 +202,9 @@ func (t *renewalTask) Name() string {
 func (t *renewalTask) Run(ctx context.Context) {
 	t.reservation.request.Index = t.reservation.request.Index.Add(1)
 	for {
-		colibriPath, err := t.reservation.daemon.ColibriSetupRsv(ctx, t.reservation.request)
+		res, err := t.reservation.daemon.ColibriSetupRsv(ctx, t.reservation.request)
 		if err == nil {
-			t.reservation.colibriPath = colibriPath
+			t.reservation.colibriPath = res.ColibriPath
 			t.reservation.onSuccess(t.reservation)
 			return
 		}

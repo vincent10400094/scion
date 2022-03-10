@@ -59,8 +59,20 @@ func SetupReq(msg *colpb.SegmentSetupRequest) (*segment.SetupReq, error) {
 	return req, nil
 }
 
-func E2ESetupRequest(msg *colpb.E2ESetupRequest) (*e2e.SetupReq, error) {
+func E2ERequest(msg *colpb.E2ERequest) (*e2e.Request, error) {
 	base, err := Request(msg.Base)
+	if err != nil {
+		return nil, err
+	}
+	return &e2e.Request{
+		Request: *base,
+		SrcHost: msg.SrcHost,
+		DstHost: msg.DstHost,
+	}, nil
+}
+
+func E2ESetupRequest(msg *colpb.E2ESetupRequest) (*e2e.SetupReq, error) {
+	base, err := E2ERequest(msg.Base)
 	if err != nil {
 		return nil, err
 	}
@@ -74,10 +86,6 @@ func E2ESetupRequest(msg *colpb.E2ESetupRequest) (*e2e.SetupReq, error) {
 	}
 	return &e2e.SetupReq{
 		Request:                *base,
-		SrcIA:                  addr.IA(msg.Params.SrcIa),
-		SrcHost:                msg.Params.SrcHost,
-		DstIA:                  addr.IA(msg.Params.DstIa),
-		DstHost:                msg.Params.DstHost,
 		SegmentRsvs:            segIds,
 		CurrentSegmentRsvIndex: int(msg.Params.CurrentSegment),
 		RequestedBW:            col.BWCls(msg.RequestedBw),
@@ -94,6 +102,10 @@ func SetupResponse(msg *colpb.SegmentSetupResponse) (segment.SegmentSetupRespons
 			return nil, err
 		}
 		res = &segment.SegmentSetupResponseSuccess{
+			AuthenticatedResponse: base.AuthenticatedResponse{
+				Timestamp:      util.SecsToTime(msg.Timestamp),
+				Authenticators: msg.Authenticators.Macs,
+			},
 			Token: *tok,
 		}
 	case *colpb.SegmentSetupResponse_Failure_:
@@ -103,6 +115,11 @@ func SetupResponse(msg *colpb.SegmentSetupResponse) (segment.SegmentSetupRespons
 			return nil, err
 		}
 		res = &segment.SegmentSetupResponseFailure{
+			AuthenticatedResponse: base.AuthenticatedResponse{
+				Timestamp:      util.SecsToTime(msg.Timestamp),
+				Authenticators: msg.Authenticators.Macs,
+			},
+			FailedStep: uint8(oneof.Failure.Failure.FailingHop),
 			FailedRequest: &segment.SetupReq{ // without base request
 				ExpirationTime:   expTime,
 				RLC:              rlc,
@@ -127,6 +144,10 @@ func E2ESetupResponse(msg *colpb.E2ESetupResponse) (e2e.SetupResponse, error) {
 			trail[i] = col.BWCls(b.Maxbw)
 		}
 		return &e2e.SetupResponseFailure{
+			AuthenticatedResponse: base.AuthenticatedResponse{
+				Timestamp:      util.SecsToTime(msg.Timestamp),
+				Authenticators: msg.Authenticators.Macs,
+			},
 			Message:    msg.Failure.Message,
 			FailedStep: uint8(msg.Failure.FailedStep),
 			AllocTrail: trail,
@@ -134,6 +155,10 @@ func E2ESetupResponse(msg *colpb.E2ESetupResponse) (e2e.SetupResponse, error) {
 	}
 	// success:
 	return &e2e.SetupResponseSuccess{
+		AuthenticatedResponse: base.AuthenticatedResponse{
+			Timestamp:      util.SecsToTime(msg.Timestamp),
+			Authenticators: msg.Authenticators.Macs,
+		},
 		Token: msg.Token,
 	}, nil
 }
@@ -154,18 +179,26 @@ func Request(msg *colpb.Request) (*base.Request, error) {
 			Index:     idx,
 			Timestamp: timestamp,
 		},
-		Path: p,
+		Path:           p,
+		Authenticators: msg.Authenticators.Macs,
 	}, nil
 }
 
 func Response(msg *colpb.Response) base.Response {
+	authResponse := base.AuthenticatedResponse{
+		Timestamp:      util.SecsToTime(msg.Timestamp),
+		Authenticators: msg.Authenticators.Macs,
+	}
 	switch r := msg.SuccessFailure.(type) {
 	case *colpb.Response_Success_:
-		return &base.ResponseSuccess{}
+		return &base.ResponseSuccess{
+			AuthenticatedResponse: authResponse,
+		}
 	case *colpb.Response_Failure_:
 		return &base.ResponseFailure{
-			Message:    r.Failure.Message,
-			FailedStep: uint8(r.Failure.FailingHop),
+			AuthenticatedResponse: authResponse,
+			FailedStep:            uint8(r.Failure.FailingHop),
+			Message:               r.Failure.Message,
 		}
 	default:
 		panic(fmt.Sprintf("unknown type %s", common.TypeOf(msg.SuccessFailure)))
@@ -212,7 +245,7 @@ func ReservationLooks(msg []*colpb.ListReservationsResponse_ReservationLooks) (
 			MaxBW:          col.BWCls(l.Maxbw),
 			AllocBW:        col.BWCls(l.Allocbw),
 			Split:          col.SplitCls(l.Splitcls),
-			Path:           TransparentPathSteps(l.Path),
+			PathSteps:      TransparentPathSteps(l.PathSteps),
 		}
 	}
 	return res, nil

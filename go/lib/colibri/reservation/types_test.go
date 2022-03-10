@@ -37,20 +37,20 @@ func TestIDRead(t *testing.T) {
 		ASID: xtest.MustParseAS("ffaa:0:1101"),
 	}
 	reference.Suffix = xtest.MustParseHexString("facecafe")
-	raw := make([]byte, 6+IDSegLen)
+	raw := make([]byte, IDSegLen)
 	n, err := reference.Read(raw)
 	require.NoError(t, err)
-	require.Equal(t, 6+IDSegLen, n)
+	require.Equal(t, IDSegLen, n)
 	require.Equal(t, xtest.MustParseHexString("ffaa00001101facecafe"), raw)
 	require.True(t, reference.IsSegmentID())
 	require.Equal(t, n, reference.Len())
 
 	// E2E
 	reference.Suffix = xtest.MustParseHexString("facecafedeadbeeff00dcafe")
-	raw = make([]byte, 6+IDE2ELen)
+	raw = make([]byte, IDE2ELen)
 	n, err = reference.Read(raw)
 	require.NoError(t, err)
-	require.Equal(t, 6+IDE2ELen, n)
+	require.Equal(t, IDE2ELen, n)
 	require.Equal(t, xtest.MustParseHexString("ffaa00001101facecafedeadbeeff00dcafe"), raw)
 	require.True(t, reference.IsE2EID())
 	require.Equal(t, n, reference.Len())
@@ -86,7 +86,7 @@ func TestE2EIDFromRaw(t *testing.T) {
 func TestIDCopy(t *testing.T) {
 	id1 := ID{
 		ASID:   xtest.MustParseAS("ff00:0:111"),
-		Suffix: make([]byte, IDE2ELen),
+		Suffix: make([]byte, IDSuffixE2ELen),
 	}
 	id1.Suffix[1] = 1
 	id2 := id1.Copy()
@@ -522,6 +522,67 @@ func TestTokenToRaw(t *testing.T) {
 	tok := newToken()
 	raw := newTokenRaw()
 	require.Equal(t, raw, tok.ToRaw())
+}
+
+func TestTokenGetFirstNHopFields(t *testing.T) {
+	cases := map[string]struct {
+		token    Token
+		n        int
+		expected []HopField
+	}{
+		"empty": {
+			token: Token{
+				InfoField: InfoField{PathType: CorePath},
+				HopFields: []HopField{*newHopField(1, 11, xtest.MustParseHexString("01234567"))},
+			},
+			n:        0,
+			expected: nil,
+		},
+		"last": {
+			token: Token{
+				InfoField: InfoField{PathType: CorePath},
+				HopFields: []HopField{
+					*newHopField(1, 11, xtest.MustParseHexString("01234567")),
+					*newHopField(2, 11, xtest.MustParseHexString("11234567")),
+				},
+			},
+			n:        1,
+			expected: []HopField{*newHopField(2, 11, xtest.MustParseHexString("11234567"))},
+		},
+		"all": {
+			token: Token{
+				InfoField: InfoField{PathType: CorePath},
+				HopFields: []HopField{
+					*newHopField(1, 11, xtest.MustParseHexString("01234567")),
+					*newHopField(2, 11, xtest.MustParseHexString("11234567")),
+				},
+			},
+			n: 2,
+			expected: []HopField{
+				*newHopField(1, 11, xtest.MustParseHexString("01234567")),
+				*newHopField(2, 11, xtest.MustParseHexString("11234567")),
+			},
+		},
+		"last_downpath": {
+			token: Token{
+				InfoField: InfoField{PathType: DownPath},
+				HopFields: []HopField{
+					*newHopField(1, 11, xtest.MustParseHexString("01234567")),
+					*newHopField(2, 11, xtest.MustParseHexString("11234567")),
+				},
+			},
+			n:        1,
+			expected: []HopField{*newHopField(1, 11, xtest.MustParseHexString("01234567"))},
+		},
+	}
+	for name, tc := range cases {
+		name, tc := name, tc
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := tc.token.GetFirstNHopFields(tc.n)
+			require.Equal(t, tc.expected, got)
+		})
+	}
 }
 
 func newInfoField() InfoField {
