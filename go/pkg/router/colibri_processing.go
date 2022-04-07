@@ -15,10 +15,12 @@
 package router
 
 import (
+	"time"
+
 	"github.com/google/gopacket"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	libcolibri "github.com/scionproto/scion/go/lib/colibri"
+	libcolibri "github.com/scionproto/scion/go/lib/colibri/dataplane"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/slayers"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
@@ -125,7 +127,7 @@ func (c *colibriPacketProcessor) basicValidation() (processResult, error) {
 	// Packet freshness
 	if !C {
 		timestamp := c.colibriPathMinimal.PacketTimestamp
-		isFresh := libcolibri.VerifyTimestamp(expTick, timestamp)
+		isFresh := libcolibri.VerifyTimestamp(expTick, timestamp, time.Now())
 		if !isFresh {
 			return processResult{}, serrors.New("verification of packet timestamp failed")
 		}

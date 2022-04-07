@@ -221,7 +221,7 @@ func TestTransparentPathFromSnet(t *testing.T) {
 					},
 				},
 				DataplanePath: path.Colibri{
-					Raw: xtest.MustParseHexString("000000000000000000000003" +
+					Raw: xtest.MustParseHexString("000000000000000080000003" +
 						"0123456789ab0123456789ab000000000d00000000000001" +
 						"0123456700010002012345670001000001234567"),
 				},
@@ -240,7 +240,7 @@ func TestTransparentPathFromSnet(t *testing.T) {
 						IA:      xtest.MustParseIA("1-ff00:0:110"),
 					},
 				},
-				RawPath: MustParseColibriPath("000000000000000000000003" +
+				RawPath: MustParseColibriPath("000000000000000080000003" +
 					"0123456789ab0123456789ab000000000d00000000000001" +
 					"0123456700010002012345670001000001234567"),
 			},
@@ -251,6 +251,7 @@ func TestTransparentPathFromSnet(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			tp, err := TransparentPathFromSnet(tc.snetPath)
+
 			if tc.expectedErr {
 				require.Error(t, err)
 			} else {
