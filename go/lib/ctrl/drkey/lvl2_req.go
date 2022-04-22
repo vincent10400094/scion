@@ -15,9 +15,7 @@
 package drkey
 
 import (
-	"time"
-
-	"github.com/golang/protobuf/ptypes"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/drkey"
@@ -26,167 +24,207 @@ import (
 	dkpb "github.com/scionproto/scion/go/pkg/proto/drkey"
 )
 
-// Host represents a host part of a level 2 drkey.
-type Host struct {
-	Type addr.HostAddrType // uint8
-	Host []byte
-}
-
-// NewHost returns a new Host from an addr.HostAddr.
-func NewHost(host addr.HostAddr) Host {
-	if host == nil {
-		host = addr.HostNone{}
-	}
-	return Host{
-		Type: host.Type(),
-		Host: host.Pack(),
-	}
-}
-
-// ToHostAddr returns the host as a addr.HostAddr.
-func (h *Host) ToHostAddr() addr.HostAddr {
-	host, err := addr.HostFromRaw(h.Host, h.Type)
-	if err != nil {
-		panic("Could not convert addr.HostAddr to drkey.Host")
-	}
-	return host
-}
-
-// Lvl2Req represents a level 2 key request from an endhost to a CS.
-type Lvl2Req struct {
-	Protocol string
-	ReqType  uint32
-	ValTime  time.Time
-	SrcIA    addr.IA
-	DstIA    addr.IA
-	SrcHost  Host
-	DstHost  Host
-	Misc     []byte
-}
-
-// NewLvl2ReqFromMeta constructs a level 2 request from a standard level 2 meta info.
-func NewLvl2ReqFromMeta(meta drkey.Lvl2Meta, valTime time.Time) Lvl2Req {
-	return Lvl2Req{
-		ReqType:  uint32(meta.KeyType),
-		Protocol: meta.Protocol,
-		ValTime:  valTime,
-		SrcIA:    meta.SrcIA,
-		DstIA:    meta.DstIA,
-		SrcHost:  NewHost(meta.SrcHost),
-		DstHost:  NewHost(meta.DstHost),
-	}
-}
-
-// ToMeta returns metadata of the requested Lvl2 DRKey.
-func (c Lvl2Req) ToMeta() drkey.Lvl2Meta {
-	return drkey.Lvl2Meta{
-		KeyType:  drkey.Lvl2KeyType(c.ReqType),
-		Protocol: c.Protocol,
-		SrcIA:    c.SrcIA,
-		DstIA:    c.DstIA,
-		SrcHost:  c.SrcHost.ToHostAddr(),
-		DstHost:  c.DstHost.ToHostAddr(),
-	}
-}
-
-// RequestToLvl2Req parses the protobuf Lvl2Request to a Lvl2Req.
-func RequestToLvl2Req(req *dkpb.DRKeyLvl2Request) (Lvl2Req, error) {
-	valTime, err := ptypes.Timestamp(req.ValTime)
-	if err != nil {
-		return Lvl2Req{}, serrors.WrapStr("invalid valTime from pb request", err)
-	}
-
-	return Lvl2Req{
-		Protocol: req.Protocol,
-		ReqType:  req.ReqType,
-		ValTime:  valTime,
-		SrcIA:    addr.IA(req.SrcIa),
-		DstIA:    addr.IA(req.DstIa),
-		SrcHost: Host{
-			Type: addr.HostAddrType(req.SrcHost.Type),
-			Host: req.SrcHost.Host,
-		},
-		DstHost: Host{
-			Type: addr.HostAddrType(req.DstHost.Type),
-			Host: req.DstHost.Host,
-		},
-		Misc: req.Misc,
+func ASHostMetaToProtoRequest(meta drkey.ASHostMeta) (*dkpb.ASHostRequest, error) {
+	return &dkpb.ASHostRequest{
+		ValTime:    timestamppb.New(meta.Validity),
+		ProtocolId: dkpb.Protocol(meta.ProtoId),
+		DstIa:      uint64(meta.DstIA),
+		SrcIa:      uint64(meta.SrcIA),
+		DstHost:    meta.DstHost,
 	}, nil
 }
 
-// KeyToLvl2Resp builds a Lvl2Resp provided a given Lvl2Key.
-func KeyToLvl2Resp(drkey drkey.Lvl2Key) (*dkpb.DRKeyLvl2Response, error) {
-	epochBegin, err := ptypes.TimestampProto(drkey.Epoch.NotBefore)
+func RequestToASHostMeta(req *dkpb.ASHostRequest) (drkey.ASHostMeta, error) {
+	err := req.ValTime.CheckValid()
 	if err != nil {
-		return nil, serrors.WrapStr("invalid EpochBegin from key", err)
+		return drkey.ASHostMeta{}, serrors.WrapStr("invalid valTime from pb request", err)
 	}
-	epochEnd, err := ptypes.TimestampProto(drkey.Epoch.NotAfter)
-	if err != nil {
-		return nil, serrors.WrapStr("invalid EpochEnd from key", err)
-	}
-	now, err := ptypes.TimestampProto(time.Now())
-	if err != nil {
-		return nil, serrors.WrapStr("invalid conversion to timestamp", err)
-	}
-
-	return &dkpb.DRKeyLvl2Response{
-		EpochBegin: epochBegin,
-		EpochEnd:   epochEnd,
-		Drkey:      []byte(drkey.Key),
-		Timestamp:  now,
+	return drkey.ASHostMeta{
+		Lvl2Meta: drkey.Lvl2Meta{
+			ProtoId:  drkey.Protocol(req.ProtocolId),
+			Validity: req.ValTime.AsTime(),
+			SrcIA:    addr.IA(req.SrcIa),
+			DstIA:    addr.IA(req.DstIa),
+		},
+		DstHost: req.DstHost,
 	}, nil
 }
 
-// Lvl2reqToProtoRequest parses the Lvl2Req to a protobuf Lvl2Request.
-func Lvl2reqToProtoRequest(req Lvl2Req) (*dkpb.DRKeyLvl2Request, error) {
-	valTime, err := ptypes.TimestampProto(req.ValTime)
-	if err != nil {
-		return nil, serrors.WrapStr("invalid valTime from request", err)
-	}
-	return &dkpb.DRKeyLvl2Request{
-		Protocol: req.Protocol,
-		ReqType:  req.ReqType,
-		DstIa:    uint64(req.DstIA),
-		SrcIa:    uint64(req.SrcIA),
-		ValTime:  valTime,
-		SrcHost: &dkpb.DRKeyLvl2Request_DRKeyHost{
-			Type: uint32(req.SrcHost.Type),
-			Host: req.SrcHost.Host,
-		},
-		DstHost: &dkpb.DRKeyLvl2Request_DRKeyHost{
-			Type: uint32(req.DstHost.Type),
-			Host: req.DstHost.Host,
-		},
+func KeyToASHostResp(drkey drkey.ASHostKey) (*dkpb.ASHostResponse, error) {
+	return &dkpb.ASHostResponse{
+		EpochBegin: timestamppb.New(drkey.Epoch.NotBefore),
+		EpochEnd:   timestamppb.New(drkey.Epoch.NotAfter),
+		Key:        drkey.Key[:],
 	}, nil
 }
 
-// GetLvl2KeyFromReply extracts the level 2 drkey from the reply.
-func GetLvl2KeyFromReply(rep *dkpb.DRKeyLvl2Response, meta drkey.Lvl2Meta) (drkey.Lvl2Key, error) {
+func GetASHostKeyFromReply(rep *dkpb.ASHostResponse,
+	meta drkey.ASHostMeta) (drkey.ASHostKey, error) {
 
-	epochBegin, err := ptypes.Timestamp(rep.EpochBegin)
+	err := rep.EpochBegin.CheckValid()
 	if err != nil {
-		return drkey.Lvl2Key{}, serrors.WrapStr("invalid EpochBegin from response", err)
+		return drkey.ASHostKey{}, serrors.WrapStr("invalid EpochBegin from response", err)
 	}
-	epochEnd, err := ptypes.Timestamp(rep.EpochEnd)
+	err = rep.EpochEnd.CheckValid()
 	if err != nil {
-		return drkey.Lvl2Key{}, serrors.WrapStr("invalid EpochEnd from response", err)
+		return drkey.ASHostKey{}, serrors.WrapStr("invalid EpochEnd from response", err)
 	}
 	epoch := drkey.Epoch{
 		Validity: cppki.Validity{
-			NotBefore: epochBegin,
-			NotAfter:  epochEnd,
+			NotBefore: rep.EpochBegin.AsTime(),
+			NotAfter:  rep.EpochEnd.AsTime(),
 		},
 	}
-	return drkey.Lvl2Key{
-		Lvl2Meta: drkey.Lvl2Meta{
-			KeyType:  meta.KeyType,
-			Protocol: meta.Protocol,
-			SrcIA:    meta.SrcIA,
-			DstIA:    meta.DstIA,
-			SrcHost:  meta.SrcHost,
-			DstHost:  meta.DstHost,
-			Epoch:    epoch,
-		},
-		Key: drkey.DRKey(rep.Drkey),
+
+	returningKey := drkey.ASHostKey{
+		ProtoId: meta.ProtoId,
+		SrcIA:   meta.SrcIA,
+		DstIA:   meta.DstIA,
+		Epoch:   epoch,
+		DstHost: meta.DstHost,
+	}
+
+	if len(rep.Key) != 16 {
+		return drkey.ASHostKey{}, serrors.New("key size in reply is not 16 bytes",
+			"len", len(rep.Key))
+	}
+	copy(returningKey.Key[:], rep.Key)
+	return returningKey, nil
+}
+
+func HostASMetaToProtoRequest(meta drkey.HostASMeta) (*dkpb.HostASRequest, error) {
+	return &dkpb.HostASRequest{
+		ValTime:    timestamppb.New(meta.Validity),
+		ProtocolId: dkpb.Protocol(meta.ProtoId),
+		DstIa:      uint64(meta.DstIA),
+		SrcIa:      uint64(meta.SrcIA),
+		SrcHost:    meta.SrcHost,
 	}, nil
+}
+
+func RequestToHostASMeta(req *dkpb.HostASRequest) (drkey.HostASMeta, error) {
+	err := req.ValTime.CheckValid()
+	if err != nil {
+		return drkey.HostASMeta{}, serrors.WrapStr("invalid valTime from pb request", err)
+	}
+	return drkey.HostASMeta{
+		Lvl2Meta: drkey.Lvl2Meta{
+			ProtoId:  drkey.Protocol(req.ProtocolId),
+			Validity: req.ValTime.AsTime(),
+			SrcIA:    addr.IA(req.SrcIa),
+			DstIA:    addr.IA(req.DstIa),
+		},
+		SrcHost: req.SrcHost,
+	}, nil
+}
+
+func KeyToHostASResp(drkey drkey.HostASKey) (*dkpb.HostASResponse, error) {
+	return &dkpb.HostASResponse{
+		EpochBegin: timestamppb.New(drkey.Epoch.NotBefore),
+		EpochEnd:   timestamppb.New(drkey.Epoch.NotAfter),
+		Key:        drkey.Key[:],
+	}, nil
+}
+
+func GetHostASKeyFromReply(rep *dkpb.HostASResponse,
+	meta drkey.HostASMeta) (drkey.HostASKey, error) {
+
+	err := rep.EpochBegin.CheckValid()
+	if err != nil {
+		return drkey.HostASKey{}, serrors.WrapStr("invalid EpochBegin from response", err)
+	}
+	err = rep.EpochEnd.CheckValid()
+	if err != nil {
+		return drkey.HostASKey{}, serrors.WrapStr("invalid EpochEnd from response", err)
+	}
+	epoch := drkey.Epoch{
+		Validity: cppki.Validity{
+			NotBefore: rep.EpochBegin.AsTime(),
+			NotAfter:  rep.EpochEnd.AsTime(),
+		},
+	}
+
+	returningKey := drkey.HostASKey{
+		ProtoId: meta.ProtoId,
+		SrcIA:   meta.SrcIA,
+		DstIA:   meta.DstIA,
+		Epoch:   epoch,
+		SrcHost: meta.SrcHost,
+	}
+	if len(rep.Key) != 16 {
+		return drkey.HostASKey{}, serrors.New("key size in reply is not 16 bytes",
+			"len", len(rep.Key))
+	}
+	copy(returningKey.Key[:], rep.Key)
+	return returningKey, nil
+}
+
+func HostHostMetaToProtoRequest(meta drkey.HostHostMeta) (*dkpb.HostHostRequest, error) {
+	return &dkpb.HostHostRequest{
+		ValTime:    timestamppb.New(meta.Validity),
+		ProtocolId: dkpb.Protocol(meta.ProtoId),
+		DstIa:      uint64(meta.DstIA),
+		SrcIa:      uint64(meta.SrcIA),
+		DstHost:    meta.DstHost,
+		SrcHost:    meta.SrcHost,
+	}, nil
+}
+
+func RequestToHostHostMeta(req *dkpb.HostHostRequest) (drkey.HostHostMeta, error) {
+	err := req.ValTime.CheckValid()
+	if err != nil {
+		return drkey.HostHostMeta{}, serrors.WrapStr("invalid valTime from pb request", err)
+	}
+	return drkey.HostHostMeta{
+		Lvl2Meta: drkey.Lvl2Meta{
+			ProtoId:  drkey.Protocol(req.ProtocolId),
+			Validity: req.ValTime.AsTime(),
+			SrcIA:    addr.IA(req.SrcIa),
+			DstIA:    addr.IA(req.DstIa),
+		},
+		SrcHost: req.SrcHost,
+		DstHost: req.DstHost,
+	}, nil
+}
+
+func KeyToHostHostResp(drkey drkey.HostHostKey) (*dkpb.HostHostResponse, error) {
+	return &dkpb.HostHostResponse{
+		EpochBegin: timestamppb.New(drkey.Epoch.NotBefore),
+		EpochEnd:   timestamppb.New(drkey.Epoch.NotAfter),
+		Key:        drkey.Key[:],
+	}, nil
+}
+
+func GetHostHostKeyFromReply(rep *dkpb.HostHostResponse,
+	meta drkey.HostHostMeta) (drkey.HostHostKey, error) {
+
+	err := rep.EpochBegin.CheckValid()
+	if err != nil {
+		return drkey.HostHostKey{}, serrors.WrapStr("invalid EpochBegin from response", err)
+	}
+	err = rep.EpochEnd.CheckValid()
+	if err != nil {
+		return drkey.HostHostKey{}, serrors.WrapStr("invalid EpochEnd from response", err)
+	}
+	epoch := drkey.Epoch{
+		Validity: cppki.Validity{
+			NotBefore: rep.EpochBegin.AsTime(),
+			NotAfter:  rep.EpochEnd.AsTime(),
+		},
+	}
+
+	returningKey := drkey.HostHostKey{
+		ProtoId: meta.ProtoId,
+		SrcIA:   meta.SrcIA,
+		DstIA:   meta.DstIA,
+		Epoch:   epoch,
+		SrcHost: meta.SrcHost,
+		DstHost: meta.DstHost,
+	}
+	if len(rep.Key) != 16 {
+		return drkey.HostHostKey{}, serrors.New("key size in reply is not 16 bytes",
+			"len", len(rep.Key))
+	}
+	copy(returningKey.Key[:], rep.Key)
+	return returningKey, nil
 }

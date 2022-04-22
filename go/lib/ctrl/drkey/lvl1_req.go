@@ -15,110 +15,107 @@
 package drkey
 
 import (
-	"time"
+	"google.golang.org/protobuf/types/known/timestamppb"
 
-	"github.com/golang/protobuf/ptypes"
-
-	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/drkey"
 	"github.com/scionproto/scion/go/lib/scrypto/cppki"
 	"github.com/scionproto/scion/go/lib/serrors"
 	dkpb "github.com/scionproto/scion/go/pkg/proto/drkey"
 )
 
-// Lvl1Req represents a level 1 request between CS.
-type Lvl1Req struct {
-	ValTime   time.Time
-	Timestamp time.Time
-}
-
-// NewLvl1Req returns a fresh Lvl1Req
-func NewLvl1Req(valTime time.Time) Lvl1Req {
-	return Lvl1Req{
-		ValTime:   valTime,
-		Timestamp: time.Now(),
-	}
-}
-
-// Lvl1reqToProtoRequest parses the Lvl1Req to a protobuf Lvl1Request.
-func Lvl1reqToProtoRequest(req Lvl1Req) (*dkpb.DRKeyLvl1Request, error) {
-	valTime, err := ptypes.TimestampProto(req.ValTime)
-	if err != nil {
-		return nil, serrors.WrapStr("invalid valTime from request", err)
-	}
-	timestamp, err := ptypes.TimestampProto(req.Timestamp)
-	if err != nil {
-		return nil, serrors.WrapStr("invalid timeStamp from request", err)
-	}
-	return &dkpb.DRKeyLvl1Request{
-		ValTime:   valTime,
-		Timestamp: timestamp,
+func Lvl1MetaToProtoRequest(meta drkey.Lvl1Meta) (*dkpb.Lvl1Request, error) {
+	return &dkpb.Lvl1Request{
+		ValTime:    timestamppb.New(meta.Validity),
+		ProtocolId: dkpb.Protocol(meta.ProtoId),
 	}, nil
 }
 
 // GetLvl1KeyFromReply extracts the level 1 drkey from the reply.
-func GetLvl1KeyFromReply(srcIA, dstIA addr.IA, rep *dkpb.DRKeyLvl1Response) (drkey.Lvl1Key, error) {
+func GetLvl1KeyFromReply(meta drkey.Lvl1Meta,
+	rep *dkpb.Lvl1Response) (drkey.Lvl1Key, error) {
 
-	epochBegin, err := ptypes.Timestamp(rep.EpochBegin)
+	err := rep.EpochBegin.CheckValid()
 	if err != nil {
 		return drkey.Lvl1Key{}, serrors.WrapStr("invalid EpochBegin from response", err)
 	}
-	epochEnd, err := ptypes.Timestamp(rep.EpochEnd)
+	err = rep.EpochEnd.CheckValid()
 	if err != nil {
 		return drkey.Lvl1Key{}, serrors.WrapStr("invalid EpochEnd from response", err)
 	}
 	epoch := drkey.Epoch{
 		Validity: cppki.Validity{
-			NotBefore: epochBegin,
-			NotAfter:  epochEnd,
+			NotBefore: rep.EpochBegin.AsTime(),
+			NotAfter:  rep.EpochEnd.AsTime(),
 		},
 	}
-	return drkey.Lvl1Key{
-		Lvl1Meta: drkey.Lvl1Meta{
-			SrcIA: srcIA,
-			DstIA: dstIA,
-			Epoch: epoch,
-		},
-		Key: drkey.DRKey(rep.Drkey),
+	returningKey := drkey.Lvl1Key{
+		SrcIA:   meta.SrcIA,
+		DstIA:   meta.DstIA,
+		Epoch:   epoch,
+		ProtoId: meta.ProtoId,
+	}
+	if len(rep.Key) != 16 {
+		return drkey.Lvl1Key{}, serrors.New("key size in reply is not 16 bytes",
+			"len", len(rep.Key))
+	}
+	copy(returningKey.Key[:], rep.Key)
+	return returningKey, nil
+}
+
+// KeyToLvl1Resp builds a Lvl1Resp provided a Lvl1Key.
+func KeyToLvl1Resp(drkey drkey.Lvl1Key) (*dkpb.Lvl1Response, error) {
+	return &dkpb.Lvl1Response{
+		EpochBegin: timestamppb.New(drkey.Epoch.NotBefore),
+		EpochEnd:   timestamppb.New(drkey.Epoch.NotAfter),
+		Key:        drkey.Key[:],
 	}, nil
 }
 
-// KeyToLvl1Resp builds a Lvl1Resp provided a given Lvl1Key.
-func KeyToLvl1Resp(drkey drkey.Lvl1Key) (*dkpb.DRKeyLvl1Response, error) {
-	epochBegin, err := ptypes.TimestampProto(drkey.Epoch.NotBefore)
-	if err != nil {
-		return nil, serrors.WrapStr("invalid EpochBegin from key", err)
-	}
-	epochEnd, err := ptypes.TimestampProto(drkey.Epoch.NotAfter)
-	if err != nil {
-		return nil, serrors.WrapStr("invalid EpochEnd from key", err)
-	}
-	now, err := ptypes.TimestampProto(time.Now())
-	if err != nil {
-		return nil, serrors.WrapStr("invalid conversion to timestamp", err)
-	}
-
-	return &dkpb.DRKeyLvl1Response{
-		EpochBegin: epochBegin,
-		EpochEnd:   epochEnd,
-		Drkey:      []byte(drkey.Key),
-		Timestamp:  now,
+func IntraLvl1ToProtoRequest(meta drkey.Lvl1Meta) (*dkpb.IntraLvl1Request, error) {
+	return &dkpb.IntraLvl1Request{
+		ValTime:    timestamppb.New(meta.Validity),
+		ProtocolId: dkpb.Protocol(meta.ProtoId),
+		DstIa:      uint64(meta.DstIA),
+		SrcIa:      uint64(meta.SrcIA),
 	}, nil
 }
 
-// RequestToLvl1Req parses the protobuf Lvl1Request to a Lvl1Req.
-func RequestToLvl1Req(req *dkpb.DRKeyLvl1Request) (Lvl1Req, error) {
-	valTime, err := ptypes.Timestamp(req.ValTime)
-	if err != nil {
-		return Lvl1Req{}, serrors.WrapStr("invalid valTime from pb req", err)
-	}
-	timestamp, err := ptypes.Timestamp(req.Timestamp)
-	if err != nil {
-		return Lvl1Req{}, serrors.WrapStr("invalid timeStamp from pb req", err)
-	}
-
-	return Lvl1Req{
-		ValTime:   valTime,
-		Timestamp: timestamp,
+// KeyToASASResp builds a ASASResp provided a Lvl1Key.
+func KeyToASASResp(drkey drkey.Lvl1Key) (*dkpb.IntraLvl1Response, error) {
+	return &dkpb.IntraLvl1Response{
+		EpochBegin: timestamppb.New(drkey.Epoch.NotBefore),
+		EpochEnd:   timestamppb.New(drkey.Epoch.NotAfter),
+		Key:        drkey.Key[:],
 	}, nil
+}
+
+func GetASASKeyFromReply(meta drkey.Lvl1Meta,
+	rep *dkpb.IntraLvl1Response) (drkey.Lvl1Key, error) {
+
+	err := rep.EpochBegin.CheckValid()
+	if err != nil {
+		return drkey.Lvl1Key{}, serrors.WrapStr("invalid EpochBegin from response", err)
+	}
+	err = rep.EpochEnd.CheckValid()
+	if err != nil {
+		return drkey.Lvl1Key{}, serrors.WrapStr("invalid EpochEnd from response", err)
+	}
+	epoch := drkey.Epoch{
+		Validity: cppki.Validity{
+			NotBefore: rep.EpochBegin.AsTime(),
+			NotAfter:  rep.EpochEnd.AsTime(),
+		},
+	}
+	returningKey := drkey.Lvl1Key{
+		SrcIA:   meta.SrcIA,
+		DstIA:   meta.DstIA,
+		Epoch:   epoch,
+		ProtoId: meta.ProtoId,
+	}
+	if len(rep.Key) != 16 {
+		return drkey.Lvl1Key{}, serrors.New("key size in reply is not 16 bytes",
+			"len", len(rep.Key))
+	}
+	copy(returningKey.Key[:], rep.Key)
+	return returningKey, nil
 }

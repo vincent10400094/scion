@@ -33,13 +33,13 @@ import (
 	"github.com/scionproto/scion/go/lib/colibri/coliquic"
 	libcolibri "github.com/scionproto/scion/go/lib/colibri/dataplane"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
-	"github.com/scionproto/scion/go/lib/daemon"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/scrypto"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/lib/util"
+	libgrpc "github.com/scionproto/scion/go/pkg/grpc"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 )
 
@@ -59,7 +59,8 @@ type Store struct {
 var _ reservationstorage.Store = (*Store)(nil)
 
 // NewStore creates a new reservation store.
-func NewStore(topo *topology.Loader, sd daemon.Connector, router snet.Router,
+func NewStore(topo *topology.Loader, tcpDialer libgrpc.Dialer,
+	router snet.Router,
 	dialer coliquic.GRPCClientDialer, db backend.DB, admitter admission.Admitter,
 	masterKey []byte) (*Store, error) {
 
@@ -85,7 +86,7 @@ func NewStore(topo *topology.Loader, sd daemon.Connector, router snet.Router,
 		db:            db,
 		admitter:      admitter,
 		operator:      operator,
-		authenticator: NewDRKeyAuthenticator(topo.IA(), sd),
+		authenticator: NewDRKeyAuthenticator(topo.IA(), tcpDialer),
 		colibriKey:    colibriKey,
 	}, nil
 }
@@ -435,7 +436,8 @@ func (s *Store) ConfirmSegmentReservation(ctx context.Context, req *base.Request
 		Message:    "failed to confirm index",
 	}
 	if !req.IsFirstAS() {
-		if err := s.authenticator.ComputeResponseMAC(ctx, failedResponse, req.Path); err != nil {
+		if err := s.authenticator.ComputeResponseMAC(ctx, failedResponse,
+			req.Path); err != nil {
 			return nil, serrors.WrapStr("authenticating response", err)
 		}
 	}
@@ -1267,6 +1269,7 @@ func (s *Store) authenticateE2ESetupReq(ctx context.Context, req *e2e.SetupReq) 
 
 func (s *Store) admitSegmentReservation(ctx context.Context, req *segment.SetupReq) (
 	segment.SegmentSetupResponse, error) {
+	logger := log.FromCtx(ctx)
 
 	failedResponse := &segment.SegmentSetupResponseFailure{
 		AuthenticatedResponse: base.AuthenticatedResponse{
@@ -1287,7 +1290,7 @@ func (s *Store) admitSegmentReservation(ctx context.Context, req *segment.SetupR
 		return res, nil
 	}
 
-	log.Debug("segment admission", "id", req.ID, "src_ia", req.Path.SrcIA(),
+	logger.Debug("segment admission", "id", req.ID, "src_ia", req.Path.SrcIA(),
 		"dst_ia", req.Path.DstIA(), "path", req.Path)
 	if err := req.Validate(); err != nil {
 		failedResponse.Message = s.errWrapStr("request failed validation", err).Error()
@@ -1342,13 +1345,13 @@ func (s *Store) admitSegmentReservation(ctx context.Context, req *segment.SetupR
 	// compute admission max BW
 	err = s.admitter.AdmitRsv(ctx, tx, req)
 	if err != nil {
-		log.Debug("segment not admitted here", "id", req.ID.String(), "err", err)
+		logger.Debug("segment not admitted here", "id", req.ID.String(), "err", err)
 		failedResponse.Message = "segment not admitted: " + s.err(err).Error()
 		return updateResponse(failedResponse)
 	}
 	// admitted; the request contains already the value inside the "allocation beads" of the rsv
 	allocBW := req.AllocTrail[len(req.AllocTrail)-1].AllocBW
-	log.Info("COLIBRI admission successful", "id", req.ID.String(), "idx", req.Index,
+	logger.Info("COLIBRI admission successful", "id", req.ID.String(), "idx", req.Index,
 		"alloc", allocBW, "trail", req.AllocTrail)
 
 	idx, err := rsv.NewIndex(req.Index, req.ExpirationTime, req.MinBW, req.MaxBW, allocBW,

@@ -27,6 +27,7 @@ from python.lib.util import write_file
 from python.topology.common import (
     ArgsTopoDicts,
     DISP_CONFIG_NAME,
+    colibri_ip_list,
     docker_host,
     prom_addr,
     prom_addr_dispatcher,
@@ -108,7 +109,7 @@ class GoGenerator(object):
 
     def _build_control_service_conf(self, topo_id, ia, base, name, infra_elem, ca):
         config_dir = '/share/conf' if self.args.docker else base
-        sd_ip = sciond_ip(self.args.docker, topo_id, self.args.networks)
+        co_ip_list = colibri_ip_list(self.args.docker, topo_id, self.args.networks)
         raw_entry = {
             'general': {
                 'id': name,
@@ -126,15 +127,14 @@ class GoGenerator(object):
                 'connection': os.path.join(self.db_dir, '%s.path.db' % name),
             },
             'drkey': {
-                'cert_file': os.path.join(base, 'crypto', 'as',
-                                          f'{topo_id.ISD()}-{topo_id.AS_file()}.pem'),
-                'key_file': os.path.join(base, 'crypto', 'as', 'cp-as.key'),
-                'drkey_db': {
-                    'connection': os.path.join(self.db_dir, '%s.drkey.db' % name),
+                'lvl1_db': {
+                    'connection': os.path.join(self.db_dir, '%s.lvl1.db' % name),
+                },
+                'sv_db': {
+                    'connection': os.path.join(self.db_dir, '%s.sv.db' % name),
                 },
                 'delegation': {
-                    'colibri': [str(sd_ip)],  # local daemon must be able to get the colibri DS
-                    'piskes': [str(sd_ip)],   # local daemon must be able to use piskes
+                    'colibri': co_ip_list,  # ColServ must be able to get the colibri SV
                 },
             },
             'tracing': self._tracing_entry(),
@@ -274,7 +274,7 @@ class GoGenerator(object):
             'path_db': {
                 'connection': os.path.join(self.db_dir, '%s.path.db' % name),
             },
-            'drkey_db': {
+            'drkey_lvl2_db': {
                 'connection': os.path.join(self.db_dir, '%s.drkey.db' % name),
             },
             'sd': {

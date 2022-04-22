@@ -16,6 +16,7 @@ package reservationstore
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -32,7 +33,7 @@ import (
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/daemon/mock_daemon"
 	"github.com/scionproto/scion/go/lib/drkey"
-	dkt "github.com/scionproto/scion/go/lib/drkey/test"
+	fakedrkey "github.com/scionproto/scion/go/lib/drkey/fake"
 	"github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/util"
 	"github.com/scionproto/scion/go/lib/xtest"
@@ -62,7 +63,6 @@ func TestE2EBaseReqInitialMac(t *testing.T) {
 			},
 		},
 	}
-	mockKeys := mockKeysSlowIsSrcWithHost(t)
 	for name, tc := range cases {
 		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
@@ -73,21 +73,19 @@ func TestE2EBaseReqInitialMac(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			daemon := mock_daemon.NewMockConnector(ctrl)
-			daemon.EXPECT().DRKeyGetLvl2Key(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
-				DoAndReturn(func(_ context.Context, meta drkey.Lvl2Meta, ts time.Time) (
-					drkey.Lvl2Key, error) {
+			mockDRKeys(t, daemon, srcIA(), net.ParseIP(srcHost()))
 
-					return mustFindKey(t, mockKeys, meta)
-				})
-
-			tc.clientReq.CreateAuthenticators(ctx, daemon)
+			err := tc.clientReq.CreateAuthenticators(ctx, daemon)
+			require.NoError(t, err)
 			// copy authenticators to transit request, as if they were received
 			for i, a := range tc.clientReq.Authenticators {
 				tc.transitReq.Authenticators[i] = a
 			}
+
+			authIA := tc.clientReq.Path.Steps[1].IA
 			auth := DRKeyAuthenticator{
-				localIA:   tc.clientReq.Path.Steps[1].IA,
-				connector: daemon,
+				localIA:   authIA,
+				fastKeyer: fakeFastKeyer{localIA: authIA},
 			}
 			tc.transitReq.Path.CurrentStep = 1 // second AS, first transit AS
 			ok, err := auth.ValidateE2ERequest(ctx, &tc.transitReq)
@@ -136,7 +134,6 @@ func TestE2ESetupReqInitialMac(t *testing.T) {
 			},
 		},
 	}
-	mockKeys := mockKeysSlowIsSrcWithHost(t)
 	for name, tc := range cases {
 		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
@@ -147,21 +144,19 @@ func TestE2ESetupReqInitialMac(t *testing.T) {
 			ctrl := gomock.NewController(t)
 			defer ctrl.Finish()
 			daemon := mock_daemon.NewMockConnector(ctrl)
-			daemon.EXPECT().DRKeyGetLvl2Key(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
-				DoAndReturn(func(_ context.Context, meta drkey.Lvl2Meta, ts time.Time) (
-					drkey.Lvl2Key, error) {
+			mockDRKeys(t, daemon, srcIA(), net.ParseIP(srcHost()))
 
-					return mustFindKey(t, mockKeys, meta)
-				})
-
-			tc.clientReq.CreateAuthenticators(ctx, daemon)
+			err := tc.clientReq.CreateAuthenticators(ctx, daemon)
+			require.NoError(t, err)
 			// copy authenticators to transit request, as if they were received
 			for i, a := range tc.clientReq.Authenticators {
 				tc.transitReq.Authenticators[i] = a
 			}
+
+			authIA := tc.clientReq.Path.Steps[1].IA
 			auth := DRKeyAuthenticator{
-				localIA:   tc.clientReq.Path.Steps[1].IA,
-				connector: daemon,
+				localIA:   authIA,
+				fastKeyer: fakeFastKeyer{localIA: authIA},
 			}
 			tc.transitReq.Path.CurrentStep = 1 // second AS, first transit AS
 			ok, err := auth.ValidateE2ESetupRequest(ctx, &tc.transitReq)
@@ -185,7 +180,6 @@ func TestE2ERequestTransitMac(t *testing.T) {
 			},
 		},
 	}
-	mockKeys := mockKeysSlowIsDst(t)
 	for name, tc := range cases {
 		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
@@ -193,22 +187,13 @@ func TestE2ERequestTransitMac(t *testing.T) {
 			ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
 			defer cancelF()
 
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-			daemon := mock_daemon.NewMockConnector(ctrl)
-			daemon.EXPECT().DRKeyGetLvl2Key(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
-				DoAndReturn(func(_ context.Context, meta drkey.Lvl2Meta, ts time.Time) (
-					drkey.Lvl2Key, error) {
-
-					return mustFindKey(t, mockKeys, meta)
-				})
-
 			// at the transit ASes:
 			for step := 1; step < len(tc.transitReq.Path.Steps); step++ {
 				tc.transitReq.Path.CurrentStep = step
+				authIA := tc.transitReq.Path.Steps[step].IA
 				auth := DRKeyAuthenticator{
-					localIA:   tc.transitReq.Path.Steps[step].IA,
-					connector: daemon,
+					localIA:   authIA,
+					fastKeyer: fakeFastKeyer{localIA: authIA},
 				}
 				err := auth.ComputeE2ERequestTransitMAC(ctx, &tc.transitReq)
 				require.NoError(t, err)
@@ -216,9 +201,10 @@ func TestE2ERequestTransitMac(t *testing.T) {
 
 			// at the destination AS:
 			tc.transitReq.Path.CurrentStep = len(tc.transitReq.Path.Steps) - 1
+			dstIA := tc.transitReq.Path.DstIA()
 			auth := DRKeyAuthenticator{
-				localIA:   tc.transitReq.Path.DstIA(),
-				connector: daemon,
+				localIA:   dstIA,
+				slowKeyer: fakeSlowKeyer{localIA: dstIA},
 			}
 			ok, err := auth.validateE2ERequestAtDestination(ctx, &tc.transitReq)
 			require.NoError(t, err)
@@ -249,23 +235,12 @@ func TestE2ESetupRequestTransitMac(t *testing.T) {
 			},
 		},
 	}
-	mockKeys := mockKeysSlowIsDst(t)
 	for name, tc := range cases {
 		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
 			defer cancelF()
-
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-			daemon := mock_daemon.NewMockConnector(ctrl)
-			daemon.EXPECT().DRKeyGetLvl2Key(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
-				DoAndReturn(func(_ context.Context, meta drkey.Lvl2Meta, ts time.Time) (
-					drkey.Lvl2Key, error) {
-
-					return mustFindKey(t, mockKeys, meta)
-				})
 
 			// at the transit ASes:
 			for step := 0; step < len(tc.transitReq.Path.Steps); step++ {
@@ -274,9 +249,10 @@ func TestE2ESetupRequestTransitMac(t *testing.T) {
 					continue
 				}
 				tc.transitReq.Path.CurrentStep = step
+				authIA := tc.transitReq.Path.Steps[step].IA
 				auth := DRKeyAuthenticator{
-					localIA:   tc.transitReq.Path.Steps[step].IA,
-					connector: daemon,
+					localIA:   authIA,
+					fastKeyer: fakeFastKeyer{localIA: authIA},
 				}
 				err := auth.ComputeE2ESetupRequestTransitMAC(ctx, &tc.transitReq)
 				require.NoError(t, err)
@@ -284,9 +260,10 @@ func TestE2ESetupRequestTransitMac(t *testing.T) {
 
 			// at the destination AS:
 			tc.transitReq.Path.CurrentStep = len(tc.transitReq.Path.Steps) - 1
+			dstIA := tc.transitReq.Path.DstIA()
 			auth := DRKeyAuthenticator{
-				localIA:   tc.transitReq.Path.DstIA(),
-				connector: daemon,
+				localIA:   dstIA,
+				slowKeyer: fakeSlowKeyer{localIA: dstIA},
 			}
 			ok, err := auth.validateE2ESetupRequestAtDestination(ctx, &tc.transitReq)
 			require.NoError(t, err)
@@ -310,7 +287,6 @@ func TestComputeAndValidateResponse(t *testing.T) {
 			path: ct.NewPath(0, "1-ff00:0:111", 1, 1, "1-ff00:0:110", 2, 1, "1-ff00:0:112", 0),
 		},
 	}
-	mockKeys := mockKeysSlowIsSrc(t)
 	for name, tc := range cases {
 		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
@@ -318,31 +294,23 @@ func TestComputeAndValidateResponse(t *testing.T) {
 			ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
 			defer cancelF()
 
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-			daemon := mock_daemon.NewMockConnector(ctrl)
-			daemon.EXPECT().DRKeyGetLvl2Key(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
-				DoAndReturn(func(_ context.Context, meta drkey.Lvl2Meta, ts time.Time) (
-					drkey.Lvl2Key, error) {
-
-					return mustFindKey(t, mockKeys, meta)
-				})
-
 			// at the transit ASes:
 			for step := 1; step < len(tc.path.Steps); step++ {
 				tc.path.CurrentStep = step
+				authIA := tc.path.Steps[step].IA
 				auth := DRKeyAuthenticator{
-					localIA:   tc.path.Steps[step].IA,
-					connector: daemon,
+					localIA:   authIA,
+					fastKeyer: fakeFastKeyer{localIA: authIA},
 				}
 				err := auth.ComputeResponseMAC(ctx, tc.res, tc.path)
 				require.NoError(t, err)
 			}
 
 			// at the initiator AS:
+			srcIA := tc.path.SrcIA()
 			auth := DRKeyAuthenticator{
-				localIA:   tc.path.SrcIA(),
-				connector: daemon,
+				localIA:   srcIA,
+				slowKeyer: fakeSlowKeyer{localIA: srcIA},
 			}
 			tc.path.CurrentStep = 0
 			ok, err := auth.ValidateResponse(ctx, tc.res, tc.path)
@@ -412,23 +380,12 @@ func TestComputeAndValidateSegmentSetupResponse(t *testing.T) {
 			lastStepWhichComputes: 2,
 		},
 	}
-	mockKeys := mockKeysSlowIsSrc(t)
 	for name, tc := range cases {
 		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
 			defer cancelF()
-
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-			daemon := mock_daemon.NewMockConnector(ctrl)
-			daemon.EXPECT().DRKeyGetLvl2Key(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
-				DoAndReturn(func(_ context.Context, meta drkey.Lvl2Meta, ts time.Time) (
-					drkey.Lvl2Key, error) {
-
-					return mustFindKey(t, mockKeys, meta)
-				})
 
 			// at the transit ASes:
 			for step := len(tc.path.Steps) - 1; step >= 0; step-- {
@@ -445,18 +402,20 @@ func TestComputeAndValidateSegmentSetupResponse(t *testing.T) {
 				if step > tc.lastStepWhichComputes || step == 0 {
 					continue
 				}
+				authIA := tc.path.Steps[step].IA
 				auth := DRKeyAuthenticator{
-					localIA:   tc.path.Steps[step].IA,
-					connector: daemon,
+					localIA:   authIA,
+					fastKeyer: fakeFastKeyer{localIA: authIA},
 				}
 				err := auth.ComputeSegmentSetupResponseMAC(ctx, tc.res, tc.path)
 				require.NoError(t, err)
 			}
 
 			// at the initiator AS:
+			srcIA := tc.path.SrcIA()
 			auth := DRKeyAuthenticator{
-				localIA:   tc.path.SrcIA(),
-				connector: daemon,
+				localIA:   srcIA,
+				slowKeyer: fakeSlowKeyer{localIA: srcIA},
 			}
 			tc.path.CurrentStep = 0
 			ok, err := auth.ValidateSegmentSetupResponse(ctx, tc.res, tc.path)
@@ -489,23 +448,12 @@ func TestComputeAndValidateE2EResponseError(t *testing.T) {
 		},
 	}
 
-	mockKeys := mockKeysSlowIsSrcWithHost(t)
 	for name, tc := range cases {
 		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
 			defer cancelF()
-
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-			daemon := mock_daemon.NewMockConnector(ctrl)
-			daemon.EXPECT().DRKeyGetLvl2Key(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
-				DoAndReturn(func(_ context.Context, meta drkey.Lvl2Meta, ts time.Time) (
-					drkey.Lvl2Key, error) {
-
-					return mustFindKey(t, mockKeys, meta)
-				})
 
 			// colibri services, all ASes:
 			for i := len(tc.path.Steps) - 1; i >= 0; i-- { // from last to first
@@ -514,7 +462,7 @@ func TestComputeAndValidateE2EResponseError(t *testing.T) {
 
 				auth := DRKeyAuthenticator{
 					localIA:   step.IA,
-					connector: daemon,
+					fastKeyer: fakeFastKeyer{localIA: step.IA},
 				}
 
 				if failure, ok := tc.response.(*base.ResponseFailure); ok {
@@ -530,6 +478,11 @@ func TestComputeAndValidateE2EResponseError(t *testing.T) {
 			}
 
 			// initiator end-host:
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			daemon := mock_daemon.NewMockConnector(ctrl)
+			mockDRKeys(t, daemon, srcIA(), tc.srcHost)
+
 			switch res := tc.response.(type) {
 			case *base.ResponseFailure:
 				clientRes := &libcol.E2EResponseError{
@@ -605,23 +558,12 @@ func TestComputeAndValidateE2ESetupResponse(t *testing.T) {
 		},
 	}
 
-	mockKeys := mockKeysSlowIsSrcWithHost(t)
 	for name, tc := range cases {
 		name, tc := name, tc
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			ctx, cancelF := context.WithTimeout(context.Background(), time.Second)
 			defer cancelF()
-
-			ctrl := gomock.NewController(t)
-			defer ctrl.Finish()
-			daemon := mock_daemon.NewMockConnector(ctrl)
-			daemon.EXPECT().DRKeyGetLvl2Key(gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes().
-				DoAndReturn(func(_ context.Context, meta drkey.Lvl2Meta, ts time.Time) (
-					drkey.Lvl2Key, error) {
-
-					return mustFindKey(t, mockKeys, meta)
-				})
 
 			// mock the compuation of the drkey authenticator by the col service of all ASes.
 			// walk in reverse from last to first AS.
@@ -646,7 +588,7 @@ func TestComputeAndValidateE2ESetupResponse(t *testing.T) {
 
 				auth := DRKeyAuthenticator{
 					localIA:   step.IA,
-					connector: daemon,
+					fastKeyer: fakeFastKeyer{localIA: step.IA},
 				}
 				err := auth.ComputeE2ESetupResponseMAC(ctx, tc.response, tc.path,
 					addr.HostFromIP(tc.srcHost), tc.rsvID)
@@ -654,6 +596,11 @@ func TestComputeAndValidateE2ESetupResponse(t *testing.T) {
 			}
 
 			// initiator end-host:
+			ctrl := gomock.NewController(t)
+			defer ctrl.Finish()
+			daemon := mock_daemon.NewMockConnector(ctrl)
+			mockDRKeys(t, daemon, srcIA(), tc.srcHost)
+
 			switch res := tc.response.(type) {
 			case *e2e.SetupResponseSuccess:
 				colibriPath := e2e.DeriveColibriPath(tc.rsvID, tc.token)
@@ -689,12 +636,8 @@ func TestComputeAndValidateE2ESetupResponse(t *testing.T) {
 	}
 }
 
-func srcIA() string {
-	return "1-ff00:0:111"
-}
-
-func dstIA() string {
-	return "1-ff00:0:112"
+func srcIA() addr.IA {
+	return xtest.MustParseIA("1-ff00:0:111")
 }
 
 func srcHost() string {
@@ -705,37 +648,45 @@ func dstHost() string {
 	return "10.2.2.2"
 }
 
-func mockKeysSlowIsSrc(t *testing.T) dkt.KeyMap {
-	return dkt.MockKeys1SlowSide(t, srcIA(),
-		"1-ff00:0:111",
-		"1-ff00:0:110",
-		"1-ff00:0:112",
-	)
+type fakeFastKeyer struct {
+	localIA addr.IA
 }
 
-// mockKeysSlowIsSrcWithHost uses AS 1-ff00:0:111 as slow path.
-func mockKeysSlowIsSrcWithHost(t *testing.T) dkt.KeyMap {
-	return dkt.MockKeys1SlowSideWithHost(t, srcIA(), srcHost(),
-		"1-ff00:0:111",
-		"1-ff00:0:110",
-		"1-ff00:0:112",
-	)
+func (f fakeFastKeyer) Lvl1(_ context.Context, meta drkey.Lvl1Meta) (drkey.Lvl1Key, error) {
+	if meta.SrcIA != f.localIA {
+		panic(fmt.Sprintf("cannot derive, SrcIA != localIA, SrcIA=%s, localIA=%s",
+			meta.SrcIA, f.localIA))
+	}
+	return fakedrkey.Lvl1Key(meta), nil
 }
 
-// mockKeysSlowIsDst uses AS 1-ff00:0:112 as slow path.
-func mockKeysSlowIsDst(t *testing.T) dkt.KeyMap {
-	return dkt.MockKeys1SlowSide(t, dstIA(),
-		"1-ff00:0:111",
-		"1-ff00:0:110",
-		"1-ff00:0:112",
-	)
+func (f fakeFastKeyer) ASHost(_ context.Context, meta drkey.ASHostMeta) (drkey.ASHostKey, error) {
+	if meta.SrcIA != f.localIA {
+		panic(fmt.Sprintf("cannot derive, SrcIA != localIA, SrcIA=%s, localIA=%s",
+			meta.SrcIA, f.localIA))
+	}
+	return fakedrkey.ASHost(meta), nil
 }
 
-func mustFindKey(t *testing.T, mockKeys dkt.KeyMap, meta drkey.Lvl2Meta) (drkey.Lvl2Key, error) {
+type fakeSlowKeyer struct {
+	localIA addr.IA
+}
+
+func (f fakeSlowKeyer) Lvl1(_ context.Context, meta drkey.Lvl1Meta) (drkey.Lvl1Key, error) {
+	if meta.DstIA != f.localIA {
+		panic(fmt.Sprintf("cannot fetch, DstIA != localIA, DstIA=%s, localIA=%s",
+			meta.DstIA, f.localIA))
+	}
+	return fakedrkey.Lvl1Key(meta), nil
+}
+
+func mockDRKeys(t *testing.T, daemon *mock_daemon.MockConnector, localIA addr.IA, localIP net.IP) {
 	t.Helper()
-	k, ok := dkt.GetKey(mockKeys, meta.SrcIA, meta.DstIA)
-	require.True(t, ok, "not found %s", meta.SrcIA)
-	require.Equal(t, meta.KeyType, k.KeyType, "wrong key type. Expected: %v, got: %v",
-		meta.KeyType, k.KeyType)
-	return k, nil
+
+	fake := fakedrkey.Keyer{
+		LocalIA: localIA,
+		LocalIP: localIP,
+	}
+	daemon.EXPECT().DRKeyGetASHostKey(gomock.Any(), gomock.Any()).AnyTimes().
+		DoAndReturn(fake.DRKeyGetASHostKey)
 }

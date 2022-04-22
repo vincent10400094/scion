@@ -18,26 +18,34 @@ package colibri
 
 import (
 	"context"
+	"crypto/aes"
+	"crypto/subtle"
 	"encoding/binary"
 	"net"
 	"time"
+
+	"github.com/dchest/cmac"
 
 	base "github.com/scionproto/scion/go/co/reservation"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/drkey"
-	dkut "github.com/scionproto/scion/go/lib/drkey/drkeyutil"
 	"github.com/scionproto/scion/go/lib/serrors"
 	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	snetpath "github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/util"
 )
 
-func createAuthsForBaseRequest(ctx context.Context, conn dkut.DRKeyGetLvl2Keyer,
+// DRKeyGetter is the interface used to obtain AS-Host DRKeys. Usually this is just the daemon.
+type DRKeyGetter interface {
+	DRKeyGetASHostKey(ctx context.Context, meta drkey.ASHostMeta) (drkey.ASHostKey, error)
+}
+
+func createAuthsForBaseRequest(ctx context.Context, conn DRKeyGetter,
 	req *BaseRequest) error {
 
-	keys, err := getKeys(ctx, conn, req.Path.Steps, req.SrcHost)
+	keys, err := getKeys(ctx, conn, req.Path.Steps, req.SrcHost, req.TimeStamp)
 	if err != nil {
 		return err
 	}
@@ -45,25 +53,25 @@ func createAuthsForBaseRequest(ctx context.Context, conn dkut.DRKeyGetLvl2Keyer,
 	// MAC and set authenticators inside request
 	payload := make([]byte, minSizeBaseReq(req))
 	serializeBaseRequest(payload, req)
-	req.Authenticators, err = dkut.ComputeAuthenticators(payload, keys)
+	req.Authenticators, err = computeAuthenticators(payload, keys)
 	return err
 }
 
-func createAuthsForE2EReservationSetup(ctx context.Context, conn dkut.DRKeyGetLvl2Keyer,
+func createAuthsForE2EReservationSetup(ctx context.Context, conn DRKeyGetter,
 	req *E2EReservationSetup) error {
 
-	keys, err := getKeys(ctx, conn, req.Path.Steps, req.SrcHost)
+	keys, err := getKeys(ctx, conn, req.Path.Steps, req.SrcHost, req.TimeStamp)
 	if err != nil {
 		return err
 	}
 
 	payload := make([]byte, minSizeE2ESetupReq(req))
 	serializeE2EReservationSetup(payload, req)
-	req.Authenticators, err = dkut.ComputeAuthenticators(payload, keys)
+	req.Authenticators, err = computeAuthenticators(payload, keys)
 	return err
 }
 
-func validateResponseAuthenticators(ctx context.Context, conn dkut.DRKeyGetLvl2Keyer,
+func validateResponseAuthenticators(ctx context.Context, conn DRKeyGetter,
 	res *E2EResponse, requestPath *base.TransparentPath, srcHost net.IP,
 	reqTimestamp time.Time) error {
 
@@ -77,10 +85,11 @@ func validateResponseAuthenticators(ctx context.Context, conn dkut.DRKeyGetLvl2K
 	if err != nil {
 		return err
 	}
-	return validateBasic(ctx, conn, payloads, res.Authenticators, requestPath, srcHost)
+	return validateBasic(ctx, conn, payloads, res.Authenticators,
+		requestPath, srcHost, reqTimestamp)
 }
 
-func validateResponseErrorAuthenticators(ctx context.Context, conn dkut.DRKeyGetLvl2Keyer,
+func validateResponseErrorAuthenticators(ctx context.Context, conn DRKeyGetter,
 	res *E2EResponseError, requestPath *base.TransparentPath, srcHost net.IP,
 	reqTimestamp time.Time) error {
 
@@ -100,10 +109,11 @@ func validateResponseErrorAuthenticators(ctx context.Context, conn dkut.DRKeyGet
 	res.Authenticators = res.Authenticators[:res.FailedAS+1]
 	requestPath.Steps = requestPath.Steps[:res.FailedAS+1]
 	payloads := serializeResponseError(res, reqTimestamp)
-	return validateBasic(ctx, conn, payloads, res.Authenticators, requestPath, srcHost)
+	return validateBasic(ctx, conn, payloads, res.Authenticators,
+		requestPath, srcHost, reqTimestamp)
 }
 
-func validateSetupErrorAuthenticators(ctx context.Context, conn dkut.DRKeyGetLvl2Keyer,
+func validateSetupErrorAuthenticators(ctx context.Context, conn DRKeyGetter,
 	res *E2ESetupError, requestPath *base.TransparentPath, srcHost net.IP,
 	reqTimestamp time.Time) error {
 
@@ -123,28 +133,40 @@ func validateSetupErrorAuthenticators(ctx context.Context, conn dkut.DRKeyGetLvl
 	res.Authenticators = res.Authenticators[:res.FailedAS+1]
 	requestPath.Steps = requestPath.Steps[:res.FailedAS+1]
 	payloads := serializeSetupError(res, reqTimestamp)
-	return validateBasic(ctx, conn, payloads, res.Authenticators, requestPath, srcHost)
+	return validateBasic(ctx, conn, payloads, res.Authenticators,
+		requestPath, srcHost, reqTimestamp)
 }
 
-func getKeys(ctx context.Context, conn dkut.DRKeyGetLvl2Keyer, steps []base.PathStep,
-	srcHost net.IP) ([][]byte, error) {
+func getKeys(ctx context.Context, conn DRKeyGetter, steps []base.PathStep,
+	srcHost net.IP, valTime time.Time) ([]drkey.Key, error) {
 
 	if len(steps) < 2 {
 		return nil, serrors.New("wrong path in request")
 	}
-	return getKeysWithLocalIA(ctx, conn, steps[1:], steps[0].IA, srcHost)
+	return getKeysWithLocalIA(ctx, conn, steps[1:], steps[0].IA, srcHost, valTime)
 }
 
-func getKeysWithLocalIA(ctx context.Context, conn dkut.DRKeyGetLvl2Keyer, steps []base.PathStep,
-	srcIA addr.IA, srcHost net.IP) ([][]byte, error) {
+func getKeysWithLocalIA(ctx context.Context, conn DRKeyGetter, steps []base.PathStep,
+	localIA addr.IA, host net.IP, valtime time.Time) ([]drkey.Key, error) {
 
-	ias := make([]addr.IA, len(steps))
+	keys := make([]drkey.Key, len(steps))
 	for i, step := range steps {
-		ias[i] = step.IA
+		key, err := conn.DRKeyGetASHostKey(ctx,
+			drkey.ASHostMeta{
+				Lvl2Meta: drkey.Lvl2Meta{
+					ProtoId:  drkey.COLIBRI,
+					Validity: valtime,
+					SrcIA:    step.IA,
+					DstIA:    localIA,
+				},
+				DstHost: host.String(),
+			})
+		if err != nil {
+			return nil, err
+		}
+		keys[i] = key.Key
 	}
-	return dkut.GetLvl2Keys(ctx, conn, drkey.AS2Host, "colibri",
-		dkut.SlowIAs(srcIA), dkut.SlowHosts(addr.HostFromIP(srcHost)),
-		dkut.FastIAs(ias...))
+	return keys, nil
 }
 
 func minSizeBaseReq(req *BaseRequest) int {
@@ -264,15 +286,17 @@ func serializeSetupError(res *E2ESetupError, timestamp time.Time) [][]byte {
 	return payloads
 }
 
-func validateBasic(ctx context.Context, conn dkut.DRKeyGetLvl2Keyer, payloads [][]byte,
-	authenticators [][]byte, requestPath *base.TransparentPath, srcHost net.IP) error {
+func validateBasic(ctx context.Context, conn DRKeyGetter, payloads [][]byte,
+	authenticators [][]byte, requestPath *base.TransparentPath,
+	srcHost net.IP, valTime time.Time) error {
 
-	keys, err := getKeysWithLocalIA(ctx, conn, requestPath.Steps, requestPath.SrcIA(), srcHost)
+	keys, err := getKeysWithLocalIA(ctx, conn, requestPath.Steps,
+		requestPath.SrcIA(), srcHost, valTime)
 	if err != nil {
 		return err
 	}
 
-	ok, err := dkut.ValidateAuthenticators(payloads, keys, authenticators)
+	ok, err := validateAuthenticators(payloads, keys, authenticators)
 	if err != nil {
 		return err
 	}
@@ -298,4 +322,55 @@ func checkEqualLength(authenticators [][]byte, path *base.TransparentPath) error
 			"path", len(path.Steps), "authenticators", len(authenticators))
 	}
 	return nil
+}
+
+// ComputeAuthenticators returns the authenticators obtained to apply a MAC function to the
+// same payload.
+func computeAuthenticators(payload []byte, keys []drkey.Key) ([][]byte, error) {
+	auths := make([][]byte, len(keys))
+	for i, k := range keys {
+		var err error
+		auths[i], err = computeMAC(payload, k)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return auths, nil
+}
+
+// ValidateAuthenticators validates each authenticators[i] against MAC(payload[i], keys[i]).
+// Returns error if the MAC function returns any error, or true/false if each of the authenticators
+// matches the result of each MAC function invocation.
+func validateAuthenticators(payloads [][]byte, keys []drkey.Key, authenticators [][]byte) (
+	bool, error) {
+
+	if len(payloads) != len(keys) || len(keys) != len(authenticators) {
+		return false, serrors.New("wrong lengths (must be the same)")
+	}
+	for i := range keys {
+		mac, err := computeMAC(payloads[i], keys[i])
+		if err != nil {
+			return false, serrors.WrapStr("MAC function", err)
+		}
+		if subtle.ConstantTimeCompare(mac, authenticators[i]) != 1 {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+func computeMAC(payload []byte, key drkey.Key) ([]byte, error) {
+	block, err := aes.NewCipher(key[:])
+	if err != nil {
+		return nil, serrors.WrapStr("initializing aes cipher", err)
+	}
+	mac, err := cmac.New(block)
+	if err != nil {
+		return nil, serrors.WrapStr("initializing cmac", err)
+	}
+	_, err = mac.Write(payload)
+	if err != nil {
+		return nil, serrors.WrapStr("preparing mac", err)
+	}
+	return mac.Sum(nil), nil
 }

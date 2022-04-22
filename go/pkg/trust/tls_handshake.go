@@ -18,8 +18,10 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"strings"
 	"time"
 
+	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/scrypto/cppki"
 	"github.com/scionproto/scion/go/lib/serrors"
 )
@@ -28,12 +30,12 @@ const defaultTimeout = 5 * time.Second
 
 // X509KeyPairLoader provides a certificate to be presented during TLS handshake.
 type X509KeyPairLoader interface {
-	LoadX509KeyPair() (*tls.Certificate, error)
+	LoadX509KeyPair(ctx context.Context, extKeyUsage x509.ExtKeyUsage) (*tls.Certificate, error)
 }
 
 // TLSCryptoManager implements callbacks which will be called during TLS handshake.
 type TLSCryptoManager struct {
-	Loader  X509KeyPairLoader
+	loader  X509KeyPairLoader
 	DB      DB
 	Timeout time.Duration
 }
@@ -42,14 +44,14 @@ type TLSCryptoManager struct {
 func NewTLSCryptoManager(loader X509KeyPairLoader, db DB) *TLSCryptoManager {
 	return &TLSCryptoManager{
 		DB:      db,
-		Loader:  loader,
+		loader:  loader,
 		Timeout: defaultTimeout,
 	}
 }
 
 // GetCertificate retrieves a certificate to be presented during TLS handshake.
-func (m *TLSCryptoManager) GetCertificate(_ *tls.ClientHelloInfo) (*tls.Certificate, error) {
-	c, err := m.Loader.LoadX509KeyPair()
+func (m *TLSCryptoManager) GetCertificate(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	c, err := m.loader.LoadX509KeyPair(hello.Context(), x509.ExtKeyUsageServerAuth)
 	if err != nil {
 		return nil, serrors.WrapStr("loading server key pair", err)
 	}
@@ -57,19 +59,46 @@ func (m *TLSCryptoManager) GetCertificate(_ *tls.ClientHelloInfo) (*tls.Certific
 }
 
 // GetClientCertificate retrieves a client certificate to be presented during TLS handshake.
-func (m *TLSCryptoManager) GetClientCertificate(_ *tls.CertificateRequestInfo) (*tls.Certificate,
+func (m *TLSCryptoManager) GetClientCertificate(reqInfo *tls.CertificateRequestInfo) (*tls.Certificate,
 	error) {
-	c, err := m.Loader.LoadX509KeyPair()
+	c, err := m.loader.LoadX509KeyPair(reqInfo.Context(), x509.ExtKeyUsageClientAuth)
 	if err != nil {
 		return nil, serrors.WrapStr("loading client key pair", err)
 	}
 	return c, nil
 }
 
+func (m *TLSCryptoManager) VerifyServerCertificate(rawCerts [][]byte,
+	_ [][]*x509.Certificate) error {
+	return m.verifyPeerCertificate(rawCerts, x509.ExtKeyUsageServerAuth)
+}
+
+func (m *TLSCryptoManager) VerifyClientCertificate(rawCerts [][]byte,
+	_ [][]*x509.Certificate) error {
+	return m.verifyPeerCertificate(rawCerts, x509.ExtKeyUsageClientAuth)
+}
+
+func (m *TLSCryptoManager) VerifyConnection(cs tls.ConnectionState) error {
+	serverNameIA := strings.Split(cs.ServerName, ",")[0]
+	serverIA, err := addr.ParseIA(serverNameIA)
+	if err != nil {
+		return serrors.WrapStr("extracting IA from server name", err)
+	}
+	certIA, err := cppki.ExtractIA(cs.PeerCertificates[0].Subject)
+	if err != nil {
+		return serrors.WrapStr("extracting IA from peer cert", err)
+	}
+	if !serverIA.Equal(certIA) {
+		return serrors.New("extracted IA from cert and server IA do not match",
+			"peer IA", certIA, "server IA", serverIA)
+	}
+	return nil
+}
+
 // VerifyPeerCertificate verifies the certificate presented by the peer during TLS handshake,
 // based on the TRC.
-func (m *TLSCryptoManager) VerifyPeerCertificate(rawCerts [][]byte,
-	_ [][]*x509.Certificate) error {
+func (m *TLSCryptoManager) verifyPeerCertificate(rawCerts [][]byte,
+	extKeyUsage x509.ExtKeyUsage) error {
 	chain := make([]*x509.Certificate, len(rawCerts))
 	for i, asn1Data := range rawCerts {
 		cert, err := x509.ParseCertificate(asn1Data)
@@ -77,6 +106,9 @@ func (m *TLSCryptoManager) VerifyPeerCertificate(rawCerts [][]byte,
 			return serrors.WrapStr("parsing peer certificate", err)
 		}
 		chain[i] = cert
+	}
+	if err := verifyExtendedKeyUsage(chain[0], extKeyUsage); err != nil {
+		return err
 	}
 	ia, err := cppki.ExtractIA(chain[0].Subject)
 	if err != nil {
@@ -107,17 +139,13 @@ func verifyChain(chain []*x509.Certificate, trcs []cppki.SignedTRC) error {
 	return errs.ToError()
 }
 
-// FileLoader loads key pair from file
-type FileLoader struct {
-	CertFile string
-	KeyFile  string
-}
-
-// LoadX509KeyPair returns the TLS certificate to be provided during a TLS handshake.
-func (l FileLoader) LoadX509KeyPair() (*tls.Certificate, error) {
-	cert, err := tls.LoadX509KeyPair(l.CertFile, l.KeyFile)
-	if err != nil {
-		return nil, serrors.WrapStr("loading certificates for DRKey gRPCs", err)
+// verifyExtendedKeyUsage return an error if the certifcate extended key usages do not
+// include any requested extended key usage.
+func verifyExtendedKeyUsage(cert *x509.Certificate, expectedKeyUsage x509.ExtKeyUsage) error {
+	for _, certExtKeyUsage := range cert.ExtKeyUsage {
+		if expectedKeyUsage == certExtKeyUsage {
+			return nil
+		}
 	}
-	return &cert, nil
+	return serrors.New("Invalid certificate key usages")
 }
