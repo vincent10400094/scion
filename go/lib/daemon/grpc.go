@@ -22,6 +22,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	base "github.com/scionproto/scion/go/co/reservation"
 	"github.com/scionproto/scion/go/co/reservation/translate"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri"
@@ -204,7 +205,7 @@ func (c grpcConn) ColibriSetupRsv(ctx context.Context, req *col.E2EReservationSe
 			DstHost:        req.DstHost,
 			RequestedBw:    uint32(req.RequestedBW),
 			Segments:       pbSegs,
-			PathSteps:      translate.PBufSteps(req.Path.Steps),
+			PathSteps:      translate.PBufSteps(req.Steps),
 			Authenticators: &colpb.Authenticators{Macs: req.Authenticators},
 		},
 	}
@@ -242,7 +243,7 @@ func (c grpcConn) ColibriSetupRsv(ctx context.Context, req *col.E2EReservationSe
 	}, nil
 }
 
-func (c grpcConn) ColibriCleanupRsv(ctx context.Context, req *colibri.BaseRequest) error {
+func (c grpcConn) ColibriCleanupRsv(ctx context.Context, req *colibri.BaseRequest, steps base.PathSteps) error {
 
 	if req == nil {
 		return serrors.New("invalid nil request")
@@ -250,21 +251,17 @@ func (c grpcConn) ColibriCleanupRsv(ctx context.Context, req *colibri.BaseReques
 	if !req.Id.IsE2EID() {
 		return serrors.New("this id is not for an E2E reservation")
 	}
-	p, err := translate.PBufPath(req.Path)
-	if err != nil {
-		return err
-	}
 	pbReq := &sdpb.ColibriCleanupRsvRequest{
 		Base: &colpb.CleanupReservationRequest{
 			Base: &colpb.Request{
 				Id:             translate.PBufID(&req.Id),
 				Index:          uint32(req.Index),
 				Timestamp:      util.TimeToSecs(time.Now()),
-				Path:           p,
 				Authenticators: &colpb.Authenticators{Macs: req.Authenticators},
 			},
 			SrcHost: req.SrcHost,
 			DstHost: req.DstHost,
+			Steps:   translate.PBufSteps(steps),
 		},
 	}
 	client := sdpb.NewDaemonServiceClient(c.conn)

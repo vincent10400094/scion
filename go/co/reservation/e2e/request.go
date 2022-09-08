@@ -33,6 +33,7 @@ type Request struct {
 func (r *Request) Len() int {
 	return r.Request.Len() + 16 + 16
 }
+
 func (r *Request) Serialize(buff []byte, options base.SerializeOptions) {
 	offset := r.Request.Len()
 	r.Request.Serialize(buff[:offset], options)
@@ -41,18 +42,32 @@ func (r *Request) Serialize(buff []byte, options base.SerializeOptions) {
 	copy(buff[offset:], r.DstHost.To16())
 }
 
+func (r *Request) Validate(steps base.PathSteps) error {
+	return r.Request.Validate(steps)
+}
+
 // SetupReq is an e2e setup/renewal request, that has been so far accepted.
 type SetupReq struct {
 	Request
 	RequestedBW            col.BWCls
 	SegmentRsvs            []col.ID
 	CurrentSegmentRsvIndex int // index in SegmentRsv above. Transfer nodes use the first segment
+	Steps                  base.PathSteps
+	CurrentStep            int
 	AllocationTrail        []col.BWCls
 	TransferIndices        []int // up to two indices (from Path) where the transfers are
 }
 
+func (r *SetupReq) IsFirstAS() bool {
+	return r.CurrentStep == 0
+}
+
+func (r *SetupReq) IsLastAS() bool {
+	return r.CurrentStep == len(r.Steps)-1
+}
+
 func (r *SetupReq) Validate() error {
-	if err := r.Request.Validate(); err != nil {
+	if err := r.Request.Validate(r.Steps); err != nil {
 		return err
 	}
 
@@ -73,7 +88,8 @@ func (r *SetupReq) Validate() error {
 
 // Len returns the length in bytes necessary to serialize the immutable fields.
 func (r *SetupReq) Len() int {
-	return r.Request.Len() + 1 + len(r.SegmentRsvs)*(reservation.IDSegLen)
+	return r.Request.Len() +
+		1 + len(r.SegmentRsvs)*(reservation.IDSegLen) + r.Steps.Size()
 }
 
 func (r *SetupReq) Serialize(buff []byte, options base.SerializeOptions) {
@@ -83,6 +99,10 @@ func (r *SetupReq) Serialize(buff []byte, options base.SerializeOptions) {
 
 	offset := r.Request.Len()
 	r.Request.Serialize(buff[:offset], options)
+	// steps:
+	r.Steps.Serialize(buff[offset:])
+	offset += r.Steps.Size()
+	// BW:
 	buff[offset] = byte(r.RequestedBW)
 	offset++
 	// segments:

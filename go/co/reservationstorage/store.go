@@ -24,6 +24,7 @@ import (
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
+	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
 )
 
 // Store is the interface to interact with the reservation store.
@@ -31,19 +32,34 @@ type Store interface {
 	// ListReservations is used to get segments to other ASes.
 	ListReservations(ctx context.Context, dstIA addr.IA, pt reservation.PathType) (
 		[]*colibri.ReservationLooks, error)
-	AdmitSegmentReservation(ctx context.Context, req *sgt.SetupReq) (
-		sgt.SegmentSetupResponse, error)
-	ConfirmSegmentReservation(ctx context.Context, req *base.Request) (
-		base.Response, error)
-	ActivateSegmentReservation(ctx context.Context, req *base.Request) (
-		base.Response, error)
-	CleanupSegmentReservation(ctx context.Context, req *base.Request) (
-		base.Response, error)
-	TearDownSegmentReservation(ctx context.Context, req *base.Request) (
-		base.Response, error)
-	AdmitE2EReservation(ctx context.Context, req *e2e.SetupReq) (
+	AdmitSegmentReservation(
+		ctx context.Context,
+		req *sgt.SetupReq,
+		rawPath slayerspath.Path,
+	) (sgt.SegmentSetupResponse, error)
+	ConfirmSegmentReservation(
+		ctx context.Context,
+		req *base.Request,
+		rawPath slayerspath.Path,
+	) (base.Response, error)
+	ActivateSegmentReservation(
+		ctx context.Context,
+		req *base.Request,
+		rawPath slayerspath.Path,
+	) (base.Response, error)
+	CleanupSegmentReservation(
+		ctx context.Context,
+		req *base.Request,
+		rawPath slayerspath.Path,
+	) (base.Response, error)
+	TearDownSegmentReservation(
+		ctx context.Context,
+		req *base.Request,
+		rawPath slayerspath.Path,
+	) (base.Response, error)
+	AdmitE2EReservation(ctx context.Context, req *e2e.SetupReq, rawPath slayerspath.Path) (
 		e2e.SetupResponse, error)
-	CleanupE2EReservation(ctx context.Context, req *e2e.Request) (
+	CleanupE2EReservation(ctx context.Context, req *e2e.Request, rawPath slayerspath.Path) (
 		base.Response, error)
 
 	// DeleteExpiredIndices returns the number of indices deleted, and the time for the
@@ -62,16 +78,20 @@ type Store interface {
 	// InitSegmentReservation starts a new segment reservation.
 	InitSegmentReservation(ctx context.Context, req *sgt.SetupReq) error
 	// InitConfirmSegmentReservation initiates a confirm request.
-	InitConfirmSegmentReservation(ctx context.Context, req *base.Request) (
+	InitConfirmSegmentReservation(ctx context.Context, req *base.Request,
+		steps base.PathSteps, rawPath slayerspath.Path) (
 		base.Response, error)
 
-	InitActivateSegmentReservation(ctx context.Context, req *base.Request) (
+	InitActivateSegmentReservation(ctx context.Context, req *base.Request,
+		steps base.PathSteps, rawPath slayerspath.Path) (
 		base.Response, error)
 
-	InitCleanupSegmentReservation(ctx context.Context, req *base.Request) (
+	InitCleanupSegmentReservation(ctx context.Context, req *base.Request,
+		steps base.PathSteps, rawPath slayerspath.Path) (
 		base.Response, error)
 
-	InitTearDownSegmentReservation(ctx context.Context, req *base.Request) (
+	InitTearDownSegmentReservation(ctx context.Context, req *base.Request,
+		steps base.PathSteps, rawPath slayerspath.Path) (
 		base.Response, error)
 
 	// -----------------------------------------------------------

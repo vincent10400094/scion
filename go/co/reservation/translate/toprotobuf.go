@@ -68,6 +68,8 @@ func PBufE2ESetupReq(req *e2e.SetupReq) (*colpb.E2ESetupRequest, error) {
 		Params: &colpb.E2ESetupRequest_PathParams{
 			Segments:       segs,
 			CurrentSegment: uint32(req.CurrentSegmentRsvIndex),
+			Steps:          PBufSteps(req.Steps),
+			CurrentStep:    uint32(req.CurrentStep),
 		},
 		Allocationtrail: trail,
 	}, nil
@@ -125,17 +127,12 @@ func PBufE2ESetupResponse(res e2e.SetupResponse) *colpb.E2ESetupResponse {
 }
 
 func PBufRequest(req *base.Request) (*colpb.Request, error) {
-	p, err := PBufPath(req.Path)
-	if err != nil {
-		return nil, err
-	}
 	return &colpb.Request{
 		Id:             PBufID(&req.ID),
 		Index:          uint32(req.Index),
 		Timestamp:      util.TimeToSecs(req.Timestamp),
-		Path:           p,
 		Authenticators: PBufAuthenticators(req.Authenticators),
-	}, err
+	}, nil
 }
 
 func PBufSetupRequestParams(req *segment.SetupReq) *colpb.SegmentSetupRequest_Params {
@@ -156,6 +153,8 @@ func PBufSetupRequestParams(req *segment.SetupReq) *colpb.SegmentSetupRequest_Pa
 		},
 		Allocationtrail:  PBufAllocTrail(req.AllocTrail),
 		ReverseTraveling: req.ReverseTraveling,
+		Steps:            PBufSteps(req.Steps),
+		CurrentStep:      uint32(req.CurrentStep),
 	}
 }
 
@@ -241,25 +240,6 @@ func PBufAllocTrail(trail reservation.AllocationBeads) []*colpb.AllocationBead {
 		}
 	}
 	return beads
-}
-
-func PBufPath(transp *base.TransparentPath) (*colpb.TransparentPath, error) {
-	if transp == nil {
-		return &colpb.TransparentPath{
-			Steps: []*colpb.PathStep{},
-		}, nil
-	}
-	buff, err := base.PathToRaw(transp.RawPath)
-	if err != nil {
-		return nil, err
-	}
-
-	return &colpb.TransparentPath{
-		CurrentStep: uint32(transp.CurrentStep),
-		Steps:       PBufSteps(transp.Steps),
-		PathType:    uint32(transp.RawPath.Type()),
-		RawPath:     buff,
-	}, nil
 }
 
 func PBufSteps(steps []base.PathStep) []*colpb.PathStep {

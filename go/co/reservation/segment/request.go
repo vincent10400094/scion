@@ -19,8 +19,10 @@ import (
 	"time"
 
 	base "github.com/scionproto/scion/go/co/reservation"
+	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/serrors"
+	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
 	"github.com/scionproto/scion/go/lib/util"
 )
 
@@ -37,22 +39,65 @@ type SetupReq struct {
 	SplitCls         reservation.SplitCls
 	PathProps        reservation.PathEndProps
 	AllocTrail       reservation.AllocationBeads
-	PathAtSource     *base.TransparentPath // requested path (maybe different than transport)
-	ReverseTraveling bool                  // a down rsv traveling to the core to be re-requested
-	Reservation      *Reservation          // nil if no reservation yet
+	ReverseTraveling bool             // a down rsv traveling to the core to be re-requested
+	Reservation      *Reservation     // nil if no reservation yet
+	Steps            base.PathSteps   // retrieved from pb request (except at source)
+	CurrentStep      int              // recovered from pb request (except at source)
+	RawPath          slayerspath.Path // recovered from dataplane (except at source)
 }
 
-func (r *SetupReq) Validate() error {
-	if err := r.Request.Validate(); err != nil {
+// Validate takes as argument a function that returns the neighboring IA given the
+// interface ID. When 0, the function must return the local IA.
+// Validate returns an error if not valid, or nil if okay.
+func (r *SetupReq) Validate(getNeighborIA func(ifaceID uint16) addr.IA) error {
+	if err := r.Request.Validate(r.Steps); err != nil {
 		return err
 	}
-	if len(r.AllocTrail) > len(r.Path.Steps) {
+	if len(r.AllocTrail) > len(r.Steps) {
 		return serrors.New("inconsistent trail and setup path", "trail", r.AllocTrail,
-			"path", r.Path)
+			"path", r.Steps)
 	}
 	if err := r.PathProps.ValidateWithPathType(r.PathType); err != nil {
 		return serrors.New("incompatible path type and props", "path_type", r.PathType,
 			"props", r.PathProps)
+	}
+	if r.Steps == nil || len(r.Steps) < 2 {
+		return serrors.New("Wrong steps state")
+	}
+	if r.CurrentStep < 0 || r.CurrentStep >= len(r.Steps) {
+		return serrors.New("invalid current step for the given steps", "currentStep", r.CurrentStep,
+			"steps len", len(r.Steps))
+	}
+	if r.Steps[0].Ingress != 0 {
+		return serrors.New("Wrong interface for srcIA ingress",
+			"ingress", r.Steps[0].Ingress)
+	}
+	if r.Steps[len(r.Steps)-1].Egress != 0 {
+		return serrors.New("Wrong interface for dstIA egress",
+			"egress", r.Steps[len(r.Steps)-1].Egress)
+	}
+	if err := r.Steps.ValidateEquivalent(r.RawPath, r.CurrentStep); err != nil {
+		return serrors.WrapStr("invalid steps/raw path", err)
+	}
+	// previous IA correct?
+	if r.CurrentStep > 0 &&
+		getNeighborIA(r.Ingress()) != r.Steps[r.CurrentStep-1].IA {
+		return serrors.New("previous IA according to steps and topology not same",
+			"steps", r.Steps[r.CurrentStep-1].IA,
+			"topo", getNeighborIA(r.Ingress()))
+	}
+	// this IA correct?
+	if r.Steps[r.CurrentStep].IA != getNeighborIA(0) {
+		return serrors.New("current IA according to steps not same as local",
+			"steps", r.Steps[r.CurrentStep].IA,
+			"local", getNeighborIA(0))
+	}
+	// next IA correct?
+	if r.CurrentStep+1 < len(r.Steps) &&
+		getNeighborIA(r.Egress()) != r.Steps[r.CurrentStep+1].IA {
+		return serrors.New("next IA according to steps and topology not same",
+			"steps", r.Steps[r.CurrentStep+1].IA,
+			"topo", getNeighborIA(r.Egress()))
 	}
 	return nil
 }
@@ -67,14 +112,28 @@ func (r *SetupReq) ValidateForReservation(rsv *Reservation) error {
 	return nil
 }
 
+// Ingress returns the ingress interface of this step for this request.
+// Do not call Ingress without validating the request first.
+func (r *SetupReq) Ingress() uint16 {
+	return r.Steps[r.CurrentStep].Ingress
+}
+
+// Egress returns the egress interface of this step for this request.
+// Do not call Egress without validating the request first.
+func (r *SetupReq) Egress() uint16 {
+	return r.Steps[r.CurrentStep].Egress
+}
+
 func (r *SetupReq) Len() int {
-	// basic_request + expTime + RLC + pathType + minBW + maxBW + splitCls + pathProps
-	return r.Request.Len() + 4 + 1 + 1 + 1 + 1 + 1 + 1
+	// basic_request + steps len + expTime + RLC + pathType + minBW + maxBW + splitCls + pathProps
+	return r.Request.Len() + r.Steps.Size() + 4 + 1 + 1 + 1 + 1 + 1 + 1
 }
 
 func (r *SetupReq) Serialize(buff []byte, options base.SerializeOptions) {
+	r.Request.Serialize(buff[:], options)
 	offset := r.Request.Len()
-	r.Request.Serialize(buff[:offset], options)
+	r.Steps.Serialize(buff[offset:])
+	offset += r.Steps.Size()
 
 	binary.BigEndian.PutUint32(buff[offset:], util.TimeToSecs(r.ExpirationTime))
 	offset += 4

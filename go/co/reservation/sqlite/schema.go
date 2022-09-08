@@ -27,7 +27,9 @@ const (
 		ingress	INTEGER NOT NULL,
 		egress	INTEGER NOT NULL,
 		path_type	INTEGER NOT NULL,
-		path	BLOB,
+		steps BLOB,
+		current_step INTEGER NOT NULL,
+		rawPath BLOB,
 		end_props	INTEGER NOT NULL,
 		traffic_split	INTEGER NOT NULL,
 		src_ia INTEGER,
@@ -51,7 +53,8 @@ const (
 	CREATE TABLE e2e_reservation (
 		ROWID	INTEGER,
 		reservation_id	BLOB NOT NULL,
-		path	BLOB,
+		steps	BLOB,
+		current_step INTEGER,
 		UNIQUE(reservation_id),
 		PRIMARY KEY(ROWID)
 	);

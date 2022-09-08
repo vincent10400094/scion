@@ -48,7 +48,7 @@ func TestValidate(t *testing.T) {
 
 	// invalid segment reservation
 	r = newReservation()
-	r.SegmentReservations[0].PathAtSource = &base.TransparentPath{}
+	r.SegmentReservations[0].Steps = nil
 	err = r.Validate()
 	require.Error(t, err)
 
@@ -112,7 +112,17 @@ func newSegmentReservation(asidPath ...string) *segment.Reservation {
 		pathComponents[i*3+2] = i*2 + 1
 	}
 	pathComponents[len(pathComponents)-1] = 0
-	r.PathAtSource = test.NewPath(pathComponents...)
+
+	p := test.NewSnetPath("1-ff00:0:1", 1, 1, "1-ff00:0:2")
+	var err error
+	r.Steps, err = base.StepsFromSnet(p)
+	if err != nil {
+		panic(err)
+	}
+	r.RawPath, err = base.PathFromDataplanePath(p.Dataplane())
+	if err != nil {
+		panic(err)
+	}
 	return r
 }
 

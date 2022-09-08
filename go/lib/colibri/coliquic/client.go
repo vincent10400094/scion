@@ -22,13 +22,14 @@ import (
 	"sync"
 	"time"
 
-	base "github.com/scionproto/scion/go/co/reservation"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
+	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/slayers/path/scion"
 	"github.com/scionproto/scion/go/lib/snet"
+	snetpath "github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/topology"
 	libgrpc "github.com/scionproto/scion/go/pkg/grpc"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
@@ -47,20 +48,21 @@ type GRPCClientDialer interface {
 // - Ensure we return a gRPC client using the correct path (the path is used at the server to
 //   measure the BW used by the services).
 type ServiceClientOperator struct {
-	connDialer       GRPCClientDialer
-	neighbors        map[uint16]*snet.UDPAddr // SvcCOL addr per interface ID
-	neighborsMutex   sync.Mutex
-	srvResolver      ColSrvResolver
-	colServices      map[addr.IA]*snet.UDPAddr // cached discovered addresses
-	colServicesMutex sync.Mutex
+	connDialer           GRPCClientDialer
+	neighboringColSvcs   map[uint16]*snet.UDPAddr // SvcCOL addr per interface ID
+	neighboringColSvcsMu sync.Mutex
+	neighboringIAs       map[uint16]addr.IA
+	srvResolver          ColSrvResolver
+	colServices          map[addr.IA]*snet.UDPAddr // cached discovered addresses
+	colServicesMutex     sync.Mutex
 }
 
 func NewServiceClientOperator(topo *topology.Loader, router snet.Router,
 	clientConn GRPCClientDialer) (*ServiceClientOperator, error) {
 
 	operator := &ServiceClientOperator{
-		connDialer: clientConn,
-		neighbors:  make(map[uint16]*snet.UDPAddr, len(topo.InterfaceIDs())),
+		connDialer:         clientConn,
+		neighboringColSvcs: make(map[uint16]*snet.UDPAddr, len(topo.InterfaceIDs())),
 		srvResolver: &DiscoveryColSrvRes{
 			Router: router,
 			Dialer: clientConn,
@@ -70,6 +72,11 @@ func NewServiceClientOperator(topo *topology.Loader, router snet.Router,
 	operator.initialize(topo)
 
 	return operator, nil
+}
+
+// Neighbors returns a map of the neighboring IAs, keyed by interface ID connecting to them.
+func (o *ServiceClientOperator) Neighbor(interfaceID uint16) addr.IA {
+	return o.neighboringIAs[interfaceID]
 }
 
 func (o *ServiceClientOperator) DialSvcCOL(ctx context.Context, dst *addr.IA) (
@@ -99,27 +106,34 @@ func (o *ServiceClientOperator) DialSvcCOL(ctx context.Context, dst *addr.IA) (
 // ColibriClient finds or creates a ColibriClient that can reach the next neighbor in
 // the path passed as argument. The underneath connection will be COLIBRI or regular SCION,
 // depending on the type of the path passed as argument.
-func (o *ServiceClientOperator) ColibriClient(ctx context.Context, transp *base.TransparentPath) (
+func (o *ServiceClientOperator) ColibriClient(
+	ctx context.Context,
+	egressID uint16,
+	rawPath slayerspath.Path,
+) (
 	colpb.ColibriServiceClient, error) {
 
-	egressID := transp.Steps[transp.CurrentStep].Egress
+	// egressID := transp.Steps[transp.CurrentStep].Egress
 	rAddr, ok := o.neighborAddr(egressID)
 	if !ok {
 		return nil, serrors.New("client operator not yet initialized for this egress ID",
-			"egress_id", egressID, "neighbor_count", len(o.neighbors))
+			"egress_id", egressID, "neighbor_count", len(o.neighboringColSvcs))
 	}
 	rAddr = rAddr.Copy() // preserve the original data
 
+	buf := make([]byte, rawPath.Len())
+	rawPath.SerializeTo(buf)
+
 	// prepare remote address with the new path
-	switch transp.RawPath.Type() {
+	switch rawPath.Type() {
 	case scion.PathType: // don't touch the service path
+		//rAddr.Path = snetpath.SCION{Raw: buf}
 	case colibri.PathType:
-		// TODO(juagargi): reactivate use of reservations for control traffic
-		// // replace the service path with the colibri one.
-		// The source must also be the original one
-		// rAddr.Path = rawPath.Copy()
-		// rAddr.IA = transp.SrcIA()
-		// TODO(juagargi) check if the colibri path is expired, and don't use it in that case
+		rAddr.Path = snetpath.Colibri{Raw: buf}
+	default:
+		// Do nothing when e.g. empty path for E2EReservations
+		// E2EReservations must eventually travel through colibri path
+		// In that case they will follow same logic as above
 	}
 
 	conn, err := o.connDialer.Dial(ctx, rAddr)
@@ -131,16 +145,18 @@ func (o *ServiceClientOperator) ColibriClient(ctx context.Context, transp *base.
 }
 
 func (o *ServiceClientOperator) neighborAddr(egressID uint16) (*snet.UDPAddr, bool) {
-	o.neighborsMutex.Lock()
-	defer o.neighborsMutex.Unlock()
+	o.neighboringColSvcsMu.Lock()
+	defer o.neighboringColSvcsMu.Unlock()
 
-	addr, ok := o.neighbors[egressID]
+	addr, ok := o.neighboringColSvcs[egressID]
 	return addr, ok
 }
 
 // initialize waits in the background until this operator can obtain paths to all the remaining IAs.
 func (o *ServiceClientOperator) initialize(topo *topology.Loader) {
-
+	o.neighboringIAs = neighbors(topo)
+	o.neighboringIAs[0] = topo.IA() // interface with ID 0 is ourselves
+	// a new local copy to find their addresses and keep track of the remaining neighbors
 	remainingIAs := neighbors(topo)
 	go func() {
 		defer log.HandlePanic()
@@ -152,11 +168,11 @@ func (o *ServiceClientOperator) initialize(topo *topology.Loader) {
 			newNeighbors := make(map[uint16]*snet.UDPAddr)
 			remainingIAs = o.findNeighbors(newNeighbors, remainingIAs)
 			if len(newNeighbors) > 0 {
-				o.neighborsMutex.Lock()
+				o.neighboringColSvcsMu.Lock()
 				for egressID, addr := range newNeighbors {
-					o.neighbors[egressID] = addr
+					o.neighboringColSvcs[egressID] = addr
 				}
-				o.neighborsMutex.Unlock()
+				o.neighboringColSvcsMu.Unlock()
 			}
 		}
 		log.Info("colibri client operator initialization complete")
@@ -199,9 +215,9 @@ func (o *ServiceClientOperator) periodicResolveNeighbors(topo *topology.Loader) 
 				"missing_count", len(remainingIAs), "total", len(neighbors),
 				"missing", strings.Join(missing, ","))
 		} else {
-			o.neighborsMutex.Lock()
-			o.neighbors = newAddrBook
-			o.neighborsMutex.Unlock()
+			o.neighboringColSvcsMu.Lock()
+			o.neighboringColSvcs = newAddrBook
+			o.neighboringColSvcsMu.Unlock()
 		}
 	}
 }

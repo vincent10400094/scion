@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"time"
 
+	base "github.com/scionproto/scion/go/co/reservation"
 	"github.com/scionproto/scion/go/co/reservation/segment"
 	"github.com/scionproto/scion/go/co/reservation/test"
 	"github.com/scionproto/scion/go/lib/addr"
@@ -29,7 +30,7 @@ import (
 func NewReservation() *segment.Reservation {
 	return NewRsv(
 		WithID("ff00:0:1", "beefcafe"),
-		WithPath(0, "1-ff00:0:1", 1, 1, "1-ff00:0:2", 0))
+		WithPath("1-ff00:0:1", 1, 1, "1-ff00:0:2"))
 }
 
 // ReservationMod allows the configuration of reservations via function calls, aka
@@ -85,9 +86,19 @@ func WithID(as, suffix string) ReservationMod {
 }
 
 func WithPath(path ...interface{}) ReservationMod {
-	transp := test.NewPath(path...)
+	snetPath := test.NewSnetPath(path...)
+	steps, err := base.StepsFromSnet(snetPath)
+	if err != nil {
+		panic(err)
+	}
+	rawPath, err := base.PathFromDataplanePath(snetPath.Dataplane())
+	if err != nil {
+		panic(err)
+	}
 	return func(rsv *segment.Reservation) *segment.Reservation {
-		rsv.PathAtSource = transp
+		rsv.Steps = steps
+		rsv.RawPath = rawPath
+		rsv.Ingress, rsv.Egress = base.InEgFromDataplanePath(rsv.RawPath)
 		return rsv
 	}
 }

@@ -24,264 +24,24 @@ import (
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/slayers"
 	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
+	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/slayers/path/empty"
+	"github.com/scionproto/scion/go/lib/slayers/path/scion"
 	"github.com/scionproto/scion/go/lib/snet"
 )
 
-// TransparentPath is used in e.g. setup requests, where the IAs should not be visible.
-// They are visible now (as the TransparentPath name implies), but this should change in the future.
-type TransparentPath struct {
-	CurrentStep int
-	Steps       []PathStep // could contain IAs
-	RawPath     slayerspath.Path
-}
-
-// TODO(juagargi) since the introduction the DataplanePath the implementation of TransparentPath
-// has changed significantly. Too many panic calls. It should actually be a snet.Path exposing
-// extra things like current step.
-
-func TransparentPathFromSnet(p snet.Path) (*TransparentPath, error) {
-	if p == nil {
-		return nil, nil
-	}
-	transp, err := TransparentPathFromInterfaces(p.Metadata().Interfaces)
-	if err != nil {
-		return transp, err
-	}
-
-	transp.RawPath, err = PathFromDataplanePath(p.Dataplane())
-	return transp, err
-}
-
-// TransparentPathFromInterfaces constructs an TransparentPath given a list of snet.PathInterface .
-// from a scion path e.g. 1-1#1, 1-2#33, 1-2#44, i-3#2.
-func TransparentPathFromInterfaces(ifaces []snet.PathInterface) (*TransparentPath, error) {
-	if len(ifaces)%2 != 0 {
-		return nil, serrors.New("wrong number of interfaces, not even", "ifaces", ifaces)
-	}
-	if len(ifaces) == 0 {
-		return &TransparentPath{Steps: []PathStep{}}, nil
-	}
-	transp := &TransparentPath{
-		Steps: make([]PathStep, len(ifaces)/2+1),
-	}
-
-	for i := 0; i < len(transp.Steps)-1; i++ {
-		transp.Steps[i].Egress = uint16(ifaces[i*2].ID)
-		transp.Steps[i].IA = ifaces[i*2].IA
-		transp.Steps[i+1].Ingress = uint16(ifaces[i*2+1].ID)
-	}
-	transp.Steps[len(transp.Steps)-1].IA = ifaces[len(ifaces)-1].IA
-	return transp, nil
-}
-
-func (p *TransparentPath) Interfaces() []snet.PathInterface {
-	if p == nil {
-		return []snet.PathInterface{}
-	}
-	ifaces := make([]snet.PathInterface, len(p.Steps)*2) // it has two too many
-	for i := 0; i < len(p.Steps); i++ {
-		ifaces[i*2].ID = common.IFIDType(p.Steps[i].Ingress)
-		ifaces[i*2].IA = p.Steps[i].IA
-		ifaces[i*2+1].ID = common.IFIDType(p.Steps[i].Egress)
-		ifaces[i*2+1].IA = p.Steps[i].IA
-	}
-	return ifaces[1 : len(ifaces)-1]
-}
-
-func (p *TransparentPath) Copy() *TransparentPath {
-	var rp slayerspath.Path
-	if p.RawPath != nil {
-		var err error
-		buff := make([]byte, p.RawPath.Len())
-		if err = p.RawPath.SerializeTo(buff); err != nil {
-			panic(fmt.Sprintf("cannot copy path, SerializeTo failed: %s", err))
-		}
-		rp, err = slayerspath.NewPath(p.RawPath.Type())
-		if err != nil {
-			panic(err)
-		}
-		if err = rp.DecodeFromBytes(buff); err != nil {
-			panic(fmt.Sprintf("cannot copy path, DecodeFromBytes failed: %s", err))
-		}
-	}
-	return &TransparentPath{
-		Steps:       append(p.Steps[:0:0], p.Steps...),
-		CurrentStep: p.CurrentStep,
-		RawPath:     rp,
-	}
-}
-
-func (p *TransparentPath) String() string {
-	if p == nil {
-		return "<nil>"
-	}
-	str := StepsToString(p.Steps)
-	if len(str) > 0 {
-		str += " "
-	}
-	rawpath := "<nil>"
-	if p.RawPath != nil {
-		rawpath = p.RawPath.Type().String()
-	}
-	str += fmt.Sprintf("[curr.step = %d, rawpath = %s]", p.CurrentStep, rawpath)
-	return str
-}
-
-func (p *TransparentPath) Len() int {
-	// currentStep + len(steps) + steps + path_type + rawpath
-	var rawPathLen int
-	if p.RawPath != nil {
-		rawPathLen = p.RawPath.Len()
-	}
-	return 2 + 2 + len(p.Steps)*pathStepLen + 1 + rawPathLen
-}
-
-// Serialize will panic if buff is less bytes than Len().
-func (p *TransparentPath) Serialize(buff []byte, options SerializeOptions) {
-	if p == nil {
-		return
-	}
-	if p.RawPath == nil {
-		// disallow existence of TransparentPath with RawPath==nil
-		p.RawPath = empty.Path{}
-	}
-	if options == SerializeMutable {
-		binary.BigEndian.PutUint16(buff, uint16(p.CurrentStep))
-	}
-	buff = buff[2:]
-	binary.BigEndian.PutUint16(buff, uint16(len(p.Steps)))
-	buff = buff[2:]
-	for _, step := range p.Steps {
-		binary.BigEndian.PutUint16(buff, step.Ingress)
-		binary.BigEndian.PutUint16(buff[2:], step.Egress)
-		binary.BigEndian.PutUint64(buff[4:], uint64(step.IA))
-		buff = buff[12:]
-	}
-	buff[0] = byte(p.RawPath.Type())
-	if options == SerializeMutable {
-		if err := p.RawPath.SerializeTo(buff[1:]); err != nil {
-			panic(fmt.Sprintf("cannot serialize path: %s", err))
-		}
-	}
-}
-
-func (p *TransparentPath) ToRaw() []byte {
-	if p == nil {
-		return []byte{}
-	}
-
-	buff := make([]byte, p.Len())
-	p.Serialize(buff, SerializeMutable)
-	return buff
-}
-
-func TransparentPathFromRaw(raw []byte) (*TransparentPath, error) {
-	if len(raw) == 0 {
-		return nil, nil
-	}
-	// currentStep + len(steps) + steps + path_type + rawpath
-	if len(raw) < 5 {
-		return nil, serrors.New("buffer too small")
-	}
-	currStep := int(binary.BigEndian.Uint16(raw))
-	raw = raw[2:]
-	stepCount := int(binary.BigEndian.Uint16(raw))
-	raw = raw[2:]
-	if len(raw) < stepCount*pathStepLen {
-		return nil, serrors.New("buffer too small for these path", "step_count", stepCount,
-			"len", len(raw))
-	}
-	steps := make([]PathStep, stepCount)
-	for i := 0; i < stepCount; i++ {
-		steps[i].Ingress = binary.BigEndian.Uint16(raw)
-		steps[i].Egress = binary.BigEndian.Uint16(raw[2:])
-		steps[i].IA = addr.IA(binary.BigEndian.Uint64(raw[4:]))
-		raw = raw[12:]
-	}
-	rp, err := slayerspath.NewPath(slayerspath.Type(raw[0]))
-	if err == nil && rp != nil {
-		if err := rp.DecodeFromBytes(raw[1:]); err != nil {
-			return nil, err
-		}
-	}
-	return &TransparentPath{
-		CurrentStep: currStep,
-		Steps:       steps,
-		RawPath:     rp,
-	}, nil
-}
-
-func (p *TransparentPath) SrcIA() addr.IA {
-	if p == nil {
-		return 0
-	}
-	return p.Steps[0].IA
-}
-
-func (p *TransparentPath) DstIA() addr.IA {
-	if p == nil || len(p.Steps) == 0 {
-		return 0
-	}
-	return p.Steps[len(p.Steps)-1].IA
-}
-
-func (p *TransparentPath) GetCurrentStep() *PathStep {
-	var curr *PathStep
-	if p.CurrentStep < len(p.Steps) {
-		curr = &p.Steps[p.CurrentStep]
-	}
-	return curr
-}
-
-func (p *TransparentPath) Validate() error {
-	if p == nil {
-		return nil
-	}
-	// sometimes we'll have requests with one step only (e.g. teardown after bad setup)
-	if len(p.Steps) < 1 {
-		return serrors.New("wrong number of steps", "count", len(p.Steps))
-	}
-	if p.CurrentStep >= len(p.Steps) {
-		return serrors.New("current step out of bounds", "curr_step", p.CurrentStep,
-			"count", len(p.Steps))
-	}
-	return nil
-}
-
-func (p *TransparentPath) Reverse() error {
-	if p == nil {
-		return nil
-	}
-	rev := make([]PathStep, len(p.Steps))
-	for i, s := range p.Steps {
-		s.Ingress, s.Egress = s.Egress, s.Ingress
-		rev[len(rev)-i-1] = s
-	}
-	p.Steps = rev
-	if p.CurrentStep < len(rev) { // if curr step is past the last item, leave it as is.
-		p.CurrentStep = len(rev) - p.CurrentStep - 1
-	}
-	// step for UTs: comparisons between empty slices and nil slices always fail.
-	// if the raw path is nil, then don't reverse anything.
-	if p.RawPath == nil {
-		return nil
-	}
-	var err error
-	p.RawPath, err = p.RawPath.Reverse()
-	return err
-}
-
-// PathStep is one hop of the TransparentPath.
-// For a source AS: Ingress will be invalid. Conversely for dst.
-// So as opposed to snet.Path, these paths have length = number of ASes in the path.
+// PathStep encompasses one-hop metadata in COLIBRI
 type PathStep struct {
 	Ingress uint16
 	Egress  uint16
 	IA      addr.IA
 }
 
-const pathStepLen = 2 + 2 + 8
+func (s PathStep) Equal(o PathStep) bool {
+	return s.Ingress == o.Ingress && s.Egress == o.Egress && s.IA.Equal(o.IA)
+}
+
+const PathStepLen = 2 + 2 + 8
 
 func PathFromDataplanePath(p snet.DataplanePath) (slayerspath.Path, error) {
 	var s slayers.SCION
@@ -289,17 +49,139 @@ func PathFromDataplanePath(p snet.DataplanePath) (slayerspath.Path, error) {
 	return s.Path, err
 }
 
+// TODO(juagargi) remove the need for this function: the initial path is not used for anything.
+// Maybe have the client operator find the path to the next hop in the case of a initial reservation.
+func ChoppedPathFromDataplane(dataplanePath snet.DataplanePath) (slayerspath.Path, error) {
+	longPath, err := PathFromDataplanePath(dataplanePath)
+	if err != nil {
+		return nil, err
+	}
+	var p *scion.Decoded
+	switch v := longPath.(type) {
+	case *scion.Raw:
+		p = &scion.Decoded{}
+		if err = p.DecodeFromBytes(v.Raw); err != nil {
+			return nil, err
+		}
+	case *scion.Decoded:
+		p = v
+	default:
+		return nil, serrors.New(fmt.Sprintf("unknown path type %T", longPath))
+	}
+	shortPath := &scion.Decoded{
+		Base: scion.Base{
+			PathMeta: scion.MetaHdr{
+				SegLen:  [3]uint8{1, 0, 0},
+				CurrINF: 0,
+				CurrHF:  0,
+			},
+			NumINF:  1,
+			NumHops: 1,
+		},
+		InfoFields: p.InfoFields[:1],
+		HopFields:  p.HopFields[:1],
+	}
+	return shortPath, nil
+}
+
 func PathToRaw(p slayerspath.Path) ([]byte, error) {
 	if p == nil {
 		return nil, nil
 	}
-	buff := make([]byte, p.Len())
-	err := p.SerializeTo(buff)
+	buff := make([]byte, p.Len()+1)
+	buff[0] = byte(p.Type())
+	err := p.SerializeTo(buff[1:])
 	return buff, err
 }
-func StepsToString(steps []PathStep) string {
-	strs := make([]string, len(steps))
-	for i, s := range steps {
+
+func PathFromRaw(raw []byte) (slayerspath.Path, error) {
+	rp, err := slayerspath.NewPath(slayerspath.Type(raw[0]))
+	if err == nil && rp != nil {
+		if err := rp.DecodeFromBytes(raw[1:]); err != nil {
+			return nil, err
+		}
+	}
+	return rp, nil
+}
+
+type PathSteps []PathStep
+
+func (p PathSteps) SrcIA() addr.IA {
+	return p[0].IA
+}
+
+func (p PathSteps) DstIA() addr.IA {
+	return p[len(p)-1].IA
+}
+
+// Size returns PathSteps size in bytes
+func (p PathSteps) Size() int {
+	return 2 + len(p)*PathStepLen
+}
+
+func (p PathSteps) Serialize(buff []byte) {
+	binary.BigEndian.PutUint16(buff, uint16(len(p)))
+	buff = buff[2:]
+	for _, step := range p {
+		binary.BigEndian.PutUint16(buff, step.Ingress)
+		binary.BigEndian.PutUint16(buff[2:], step.Egress)
+		binary.BigEndian.PutUint64(buff[4:], uint64(step.IA))
+		buff = buff[12:]
+	}
+}
+
+func (p PathSteps) ToRaw() []byte {
+	buff := make([]byte, p.Size())
+	p.Serialize(buff)
+	return buff
+}
+
+func PathStepsFromRaw(raw []byte) PathSteps {
+	stepCount := int(binary.BigEndian.Uint16(raw))
+	raw = raw[2:]
+	steps := make([]PathStep, stepCount)
+	for i := 0; i < stepCount; i++ {
+		steps[i].Ingress = binary.BigEndian.Uint16(raw)
+		steps[i].Egress = binary.BigEndian.Uint16(raw[2:])
+		steps[i].IA = addr.IA(binary.BigEndian.Uint64(raw[4:]))
+		raw = raw[12:]
+	}
+	return steps
+}
+
+func (p PathSteps) Copy() PathSteps {
+	return append(p[:0:0], p...)
+}
+
+func (p PathSteps) Reverse() PathSteps {
+	rev := make([]PathStep, len(p))
+	for i, s := range p {
+		s.Ingress, s.Egress = s.Egress, s.Ingress
+		rev[len(rev)-i-1] = s
+	}
+	return rev
+}
+
+// Interfaces return a snet.PathInterfaces leaving out the leading and trailing
+// virtual interfaces.
+func (p PathSteps) Interfaces() []snet.PathInterface {
+	if p == nil {
+		return []snet.PathInterface{}
+	}
+	ifaces := make([]snet.PathInterface, len(p)*2) // it has two too many
+	for i := 0; i < len(p); i++ {
+		ifaces[i*2].ID = common.IFIDType(p[i].Ingress)
+		ifaces[i*2].IA = p[i].IA
+		ifaces[i*2+1].ID = common.IFIDType(p[i].Egress)
+		ifaces[i*2+1].IA = p[i].IA
+	}
+	//
+	return ifaces[1 : len(ifaces)-1]
+}
+
+func (p PathSteps) String() string {
+	strs := make([]string, len(p))
+	for i, s := range p {
 		if s.IA.IsZero() {
 			strs[i] = fmt.Sprintf("%d,%d", s.Ingress, s.Egress)
 		} else {
@@ -307,4 +189,148 @@ func StepsToString(steps []PathStep) string {
 		}
 	}
 	return strings.Join(strs, " > ")
+}
+
+// ValidateEquivalent checks that these steps are compatible with the path.
+// Compatible means the ingress/egress interface of the current step is the same
+// as those of the raw path if the raw path is colibri, or in the case the raw path
+// is of type scion, that the ingress is the same and that the path consists of only 2 hops.
+// This is because the regular scion path type can only be used to contact the
+// colibri service from the previous colibri service.
+// TODO(juagargi) support colibri EER paths
+func (s PathSteps) ValidateEquivalent(path slayerspath.Path, atStep int) error {
+	var in, eg uint16
+	doColibriPath := func(p colibri.ColibriPathFacade) {
+		infF := p.GetInfoField()
+		if !infF.S {
+			panic("colibri EER paths are not yet supported")
+		}
+		hf := p.GetCurrentHopField()
+		in, eg = hf.IngressId, hf.EgressId
+		// if using a SegR in a stitching point, ingress or egress could be 0, depending on
+		// wether the first segment or the second is being validated
+		if infF.S {
+			if infF.CurrHF == 0 { // second segment, ignore ingress (it is us)
+				in = s[atStep].Ingress
+			} else if infF.CurrHF == infF.HFCount-1 { // first segment, ignore egress (it's us)
+				eg = s[atStep].Egress
+			}
+		}
+	}
+	doScionPath := func(p *scion.Decoded) error {
+		// scion path must be 2 hops only
+		if p.Base.NumINF != 1 || p.Base.NumHops > 2 {
+			return serrors.New("steps not compatible with this scion path: must be direct",
+				"inf_count", p.Base.NumINF, "hop_count", p.Base.NumHops,
+				"curr_hop", p.Base.PathMeta.CurrHF)
+		}
+		hf := p.HopFields[p.Base.PathMeta.CurrHF]
+		in, eg = hf.ConsIngress, hf.ConsEgress
+		if !p.InfoFields[0].ConsDir {
+			in = eg
+		}
+		// always ignore egress
+		eg = s[atStep].Egress
+		return nil
+	}
+	switch v := path.(type) {
+	case *colibri.ColibriPathMinimal:
+		doColibriPath(v)
+	case *colibri.ColibriPath:
+		doColibriPath(v)
+	case *scion.Raw:
+		p := &scion.Decoded{}
+		if err := p.DecodeFromBytes(v.Raw); err != nil {
+			return err
+		}
+		if err := doScionPath(p); err != nil {
+			return err
+		}
+	case *scion.Decoded:
+		if err := doScionPath(v); err != nil {
+			return err
+		}
+	case empty.Path:
+		if atStep != 0 {
+			return serrors.New("empty path is only allowed at source ASes", "curr_step", atStep)
+		}
+		return nil // ignore all checks
+	default:
+		return serrors.New(fmt.Sprintf("Invalid path type %T!\n", v))
+	}
+	if in != s[atStep].Ingress || eg != s[atStep].Egress {
+		return serrors.New("steps and path are not equivalent",
+			"path_type", path.Type().String(),
+			"path", fmt.Sprintf("[%d,%d]", in, eg),
+			"steps", fmt.Sprintf("[%d,%d]", s[atStep].Ingress, s[atStep].Egress))
+	}
+
+	return nil
+}
+
+func (s PathSteps) Equal(o PathSteps) bool {
+	if len(s) != len(o) {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if !s[i].Equal(o[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func StepsFromSnet(p snet.Path) (PathSteps, error) {
+	if p == nil {
+		return nil, nil
+	}
+	steps, err := StepsFromInterfaces(p.Metadata().Interfaces)
+	if err != nil {
+		return nil, err
+	}
+
+	return steps, err
+}
+
+func StepsFromInterfaces(ifaces []snet.PathInterface) (PathSteps, error) {
+	if len(ifaces)%2 != 0 {
+		return nil, serrors.New("wrong number of interfaces, not even", "ifaces", ifaces)
+	}
+	if len(ifaces) == 0 {
+		return PathSteps{}, nil
+	}
+	steps := make([]PathStep, len(ifaces)/2+1)
+
+	for i := 0; i < len(steps)-1; i++ {
+		steps[i].Egress = uint16(ifaces[i*2].ID)
+		steps[i].IA = ifaces[i*2].IA
+		steps[i+1].Ingress = uint16(ifaces[i*2+1].ID)
+	}
+	steps[len(steps)-1].IA = ifaces[len(ifaces)-1].IA
+	return steps, nil
+}
+
+func InEgFromDataplanePath(path slayerspath.Path) (uint16, uint16) {
+	switch v := path.(type) {
+	case *colibri.ColibriPathMinimal:
+		return v.CurrHopField.IngressId, v.CurrHopField.EgressId
+	case *colibri.ColibriPath:
+		curr := v.InfoField.CurrHF
+		return v.HopFields[curr].IngressId, v.HopFields[curr].EgressId
+	case *scion.Raw:
+		inf, err := v.GetCurrentInfoField()
+		if err != nil {
+			panic(err)
+		}
+		hf, err := v.GetCurrentHopField()
+		if err != nil {
+			panic(err)
+		}
+		if inf.ConsDir {
+			return hf.ConsIngress, hf.ConsEgress
+		}
+		return hf.ConsEgress, hf.ConsIngress
+	default:
+		panic(fmt.Sprintf("Invalid path type %T!\n", v))
+	}
 }

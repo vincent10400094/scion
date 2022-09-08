@@ -794,8 +794,14 @@ func newTestRequest(t *testing.T, ingress, egress int,
 
 	ID, err := reservation.IDFromRaw(xtest.MustParseHexString("ff0000010001beefcafe"))
 	require.NoError(t, err)
+	p := test.NewSnetPathWithHop("1-ff00:1:0", 1, ingress, "1-ff00:1:1", egress, 1, "1-ff00:1:2")
+	steps, err := base.StepsFromSnet(p)
+	require.NoError(t, err)
+	rawPath, err := base.PathFromDataplanePath(p.Dataplane())
+	require.NoError(t, err)
 	baseReq := base.NewRequest(util.SecsToTime(1), ID, 0,
-		test.NewPath(ingress, "1-ff00:1:1", egress))
+		len(steps))
+
 	return &segment.SetupReq{
 		Request:        *baseReq,
 		ExpirationTime: util.SecsToTime(10),
@@ -805,6 +811,9 @@ func newTestRequest(t *testing.T, ingress, egress int,
 		MaxBW:          maxBW,
 		SplitCls:       2,
 		PathProps:      reservation.StartLocal | reservation.EndLocal,
+		Steps:          steps,
+		RawPath:        rawPath,
+		CurrentStep:    1,
 	}
 }
 
@@ -814,6 +823,17 @@ func testNewRsv(t *testing.T, srcAS string, suffix string, ingress, egress uint1
 	ID, err := reservation.NewID(xtest.MustParseAS(srcAS),
 		xtest.MustParseHexString(suffix))
 	require.NoError(t, err)
+
+	//only set so that validate does not panic
+	p := test.NewSnetPath("1-ff00:0:1", int(egress), int(ingress), "1-ff00:0:2")
+	steps, err := base.StepsFromSnet(p)
+	require.NoError(t, err)
+	rawPath, err := base.PathFromDataplanePath(p.Dataplane())
+	require.NoError(t, err)
+	if err != nil {
+		panic(err)
+	}
+
 	rsv := &segment.Reservation{
 		ID: *ID,
 		Indices: segment.Indices{
@@ -830,6 +850,8 @@ func testNewRsv(t *testing.T, srcAS string, suffix string, ingress, egress uint1
 		PathType:     reservation.UpPath,
 		PathEndProps: reservation.StartLocal | reservation.EndLocal | reservation.EndTransfer,
 		TrafficSplit: 2,
+		RawPath:      rawPath,
+		Steps:        steps,
 	}
 	err = rsv.SetIndexConfirmed(10)
 	require.NoError(t, err)
@@ -852,21 +874,6 @@ func testAddAllocTrail(req *segment.SetupReq, beads ...reservation.BWCls) *segme
 		req.AllocTrail = append(req.AllocTrail, beads)
 	}
 	return req
-}
-
-func getMaxBWPerSource(t *testing.T, rsvs []*segment.Reservation, skipASID, skipSuffix string) (
-	map[addr.AS]uint64, error) {
-
-	skipRsv, err := reservation.NewID(xtest.MustParseAS(skipASID),
-		xtest.MustParseHexString(skipSuffix))
-	require.NoError(t, err)
-	maxBWPerSrc := make(map[addr.AS]uint64)
-	for _, r := range rsvs {
-		if !r.ID.Equal(skipRsv) {
-			maxBWPerSrc[r.ID.ASID] += r.MaxBlockedBW()
-		}
-	}
-	return maxBWPerSrc, nil
 }
 
 type sourceIngressEgress struct {
@@ -1082,6 +1089,8 @@ func persistRsvFromAdmittedRequest(t *testing.T, db *sqlite.Backend, req segment
 		rsv.ID = req.ID
 		rsv.Ingress = req.Ingress()
 		rsv.Egress = req.Egress()
+		rsv.Steps = req.Steps
+		rsv.RawPath = req.RawPath
 		require.NoError(t, err)
 	} else {
 		index := rsv.Index(req.Index)

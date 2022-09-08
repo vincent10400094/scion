@@ -43,9 +43,9 @@ type DRKeyGetter interface {
 }
 
 func createAuthsForBaseRequest(ctx context.Context, conn DRKeyGetter,
-	req *BaseRequest) error {
+	req *BaseRequest, steps base.PathSteps) error {
 
-	keys, err := getKeys(ctx, conn, req.Path.Steps, req.SrcHost, req.TimeStamp)
+	keys, err := getKeys(ctx, conn, steps, req.SrcHost, req.TimeStamp)
 	if err != nil {
 		return err
 	}
@@ -53,6 +53,7 @@ func createAuthsForBaseRequest(ctx context.Context, conn DRKeyGetter,
 	// MAC and set authenticators inside request
 	payload := make([]byte, minSizeBaseReq(req))
 	serializeBaseRequest(payload, req)
+
 	req.Authenticators, err = computeAuthenticators(payload, keys)
 	return err
 }
@@ -60,7 +61,7 @@ func createAuthsForBaseRequest(ctx context.Context, conn DRKeyGetter,
 func createAuthsForE2EReservationSetup(ctx context.Context, conn DRKeyGetter,
 	req *E2EReservationSetup) error {
 
-	keys, err := getKeys(ctx, conn, req.Path.Steps, req.SrcHost, req.TimeStamp)
+	keys, err := getKeys(ctx, conn, req.Steps, req.SrcHost, req.TimeStamp)
 	if err != nil {
 		return err
 	}
@@ -72,69 +73,69 @@ func createAuthsForE2EReservationSetup(ctx context.Context, conn DRKeyGetter,
 }
 
 func validateResponseAuthenticators(ctx context.Context, conn DRKeyGetter,
-	res *E2EResponse, requestPath *base.TransparentPath, srcHost net.IP,
+	res *E2EResponse, steps base.PathSteps, srcHost net.IP,
 	reqTimestamp time.Time) error {
 
-	if err := checkValidAuthenticatorsAndPath(res, requestPath); err != nil {
+	if err := checkValidAuthenticatorsAndPath(res, steps); err != nil {
 		return err
 	}
-	if err := checkEqualLength(res.Authenticators, requestPath); err != nil {
+	if err := checkEqualLength(res.Authenticators, steps); err != nil {
 		return err
 	}
-	payloads, err := serializeResponse(res, requestPath, reqTimestamp)
+	payloads, err := serializeResponse(res, steps, reqTimestamp)
 	if err != nil {
 		return err
 	}
 	return validateBasic(ctx, conn, payloads, res.Authenticators,
-		requestPath, srcHost, reqTimestamp)
+		steps, srcHost, reqTimestamp)
 }
 
 func validateResponseErrorAuthenticators(ctx context.Context, conn DRKeyGetter,
-	res *E2EResponseError, requestPath *base.TransparentPath, srcHost net.IP,
+	res *E2EResponseError, steps base.PathSteps, srcHost net.IP,
 	reqTimestamp time.Time) error {
 
-	if err := checkValidAuthenticatorsAndPath(res, requestPath); err != nil {
+	if err := checkValidAuthenticatorsAndPath(res, steps); err != nil {
 		return err
 	}
-	if err := checkEqualLength(res.Authenticators, requestPath); err != nil {
+	if err := checkEqualLength(res.Authenticators, steps); err != nil {
 		return err
 	}
 	// because a failure can originate at any on-path-AS, skip ASes before its origin:
 	originalAuthenticators := res.Authenticators
-	originalSteps := requestPath.Steps
+	originalSteps := steps
 	defer func() {
 		res.Authenticators = originalAuthenticators
-		requestPath.Steps = originalSteps
+		steps = originalSteps
 	}()
 	res.Authenticators = res.Authenticators[:res.FailedAS+1]
-	requestPath.Steps = requestPath.Steps[:res.FailedAS+1]
+	steps = steps[:res.FailedAS+1]
 	payloads := serializeResponseError(res, reqTimestamp)
 	return validateBasic(ctx, conn, payloads, res.Authenticators,
-		requestPath, srcHost, reqTimestamp)
+		steps, srcHost, reqTimestamp)
 }
 
 func validateSetupErrorAuthenticators(ctx context.Context, conn DRKeyGetter,
-	res *E2ESetupError, requestPath *base.TransparentPath, srcHost net.IP,
+	res *E2ESetupError, steps base.PathSteps, srcHost net.IP,
 	reqTimestamp time.Time) error {
 
-	if err := checkValidAuthenticatorsAndPath(res, requestPath); err != nil {
+	if err := checkValidAuthenticatorsAndPath(res, steps); err != nil {
 		return err
 	}
-	if err := checkEqualLength(res.Authenticators, requestPath); err != nil {
+	if err := checkEqualLength(res.Authenticators, steps); err != nil {
 		return err
 	}
 	// because a failure can originate at any on-path AS, skip ASes before its origin:
 	originalAuthenticators := res.Authenticators
-	originalSteps := requestPath.Steps
+	originalSteps := steps.Copy()
 	defer func() {
 		res.Authenticators = originalAuthenticators
-		requestPath.Steps = originalSteps
+		steps = originalSteps
 	}()
 	res.Authenticators = res.Authenticators[:res.FailedAS+1]
-	requestPath.Steps = requestPath.Steps[:res.FailedAS+1]
+	steps = steps[:res.FailedAS+1]
 	payloads := serializeSetupError(res, reqTimestamp)
 	return validateBasic(ctx, conn, payloads, res.Authenticators,
-		requestPath, srcHost, reqTimestamp)
+		steps, srcHost, reqTimestamp)
 }
 
 func getKeys(ctx context.Context, conn DRKeyGetter, steps []base.PathStep,
@@ -170,14 +171,24 @@ func getKeysWithLocalIA(ctx context.Context, conn DRKeyGetter, steps []base.Path
 }
 
 func minSizeBaseReq(req *BaseRequest) int {
-	return req.Id.Len() + 1 + 4 + // ID + index + time_stamp
-		+req.Path.Len() + // path
+	// fail to compile if these fields are not there
+	_ = req.Id
+	_ = req.Index
+	_ = req.TimeStamp
+	_ = req.SrcHost
+	_ = req.DstHost
+	return (6 + reservation.IDSuffixE2ELen) + 1 + 4 + // ID + index + time_stamp
 		16 + 16 // srcHost + dstHost
 }
 
 func minSizeE2ESetupReq(req *E2EReservationSetup) int {
-	// BaseRequest + BW + Segment reservation IDs
-	return minSizeBaseReq(&req.BaseRequest) + 1 + len(req.Segments)*reservation.IDSegLen
+	// fail to compile if these fields are not there
+	_ = req.BaseRequest
+	_ = req.RequestedBW
+	_ = req.Segments
+	// BaseRequest + BW + Segment reservation IDs + Steps
+	return minSizeBaseReq(&req.BaseRequest) +
+		1 + len(req.Segments)*reservation.IDSegLen + req.Steps.Size()
 }
 
 func serializeBaseRequest(buff []byte, req *BaseRequest) {
@@ -191,9 +202,6 @@ func serializeBaseRequest(buff []byte, req *BaseRequest) {
 	offset++
 	binary.BigEndian.PutUint32(buff[offset:], util.TimeToSecs(req.TimeStamp))
 	offset += 4
-	// path:
-	req.Path.Serialize(buff[offset:], base.SerializeImmutable)
-	offset += req.Path.Len()
 	// src and dst hosts:
 	copy(buff[offset:], req.SrcHost.To16())
 	offset += 16
@@ -207,6 +215,10 @@ func serializeE2EReservationSetup(buff []byte, req *E2EReservationSetup) {
 	offset := minSizeBaseReq(&req.BaseRequest)
 	serializeBaseRequest(buff[:offset], &req.BaseRequest)
 
+	// steps:
+	req.Steps.Serialize(buff[offset:])
+	offset += req.Steps.Size()
+
 	// BW and segments:
 	buff[offset] = byte(req.RequestedBW)
 	offset++
@@ -217,7 +229,7 @@ func serializeE2EReservationSetup(buff []byte, req *E2EReservationSetup) {
 }
 
 // serializeResponse returns the serialized versions of the response, one per AS in the path.
-func serializeResponse(res *E2EResponse, path *base.TransparentPath, timestamp time.Time) (
+func serializeResponse(res *E2EResponse, steps base.PathSteps, timestamp time.Time) (
 	[][]byte, error) {
 
 	colPath, ok := res.ColibriPath.Dataplane().(snetpath.Colibri)
@@ -234,7 +246,7 @@ func serializeResponse(res *E2EResponse, path *base.TransparentPath, timestamp t
 	binary.BigEndian.PutUint32(timestampBuff, util.TimeToSecs(timestamp))
 	allHfs := colibriPath.HopFields
 	payloads := make([][]byte, len(allHfs))
-	for i := range path.Steps {
+	for i := range steps {
 		colibriPath.InfoField.HFCount = uint8(len(allHfs) - i)
 		colibriPath.HopFields = allHfs[i:]
 		payloads[i] = make([]byte, 1+4+colibriPath.Len()) // marker + timestamp + path
@@ -287,11 +299,11 @@ func serializeSetupError(res *E2ESetupError, timestamp time.Time) [][]byte {
 }
 
 func validateBasic(ctx context.Context, conn DRKeyGetter, payloads [][]byte,
-	authenticators [][]byte, requestPath *base.TransparentPath,
+	authenticators [][]byte, steps base.PathSteps,
 	srcHost net.IP, valTime time.Time) error {
 
-	keys, err := getKeysWithLocalIA(ctx, conn, requestPath.Steps,
-		requestPath.SrcIA(), srcHost, valTime)
+	keys, err := getKeysWithLocalIA(ctx, conn, steps,
+		steps.SrcIA(), srcHost, valTime)
 	if err != nil {
 		return err
 	}
@@ -306,20 +318,20 @@ func validateBasic(ctx context.Context, conn DRKeyGetter, payloads [][]byte,
 	return nil
 }
 
-func checkValidAuthenticatorsAndPath(res interface{}, path *base.TransparentPath) error {
+func checkValidAuthenticatorsAndPath(res interface{}, steps base.PathSteps) error {
 	if res == nil {
 		return serrors.New("no response")
 	}
-	if path == nil {
+	if steps == nil {
 		return serrors.New("no path")
 	}
 	return nil
 }
 
-func checkEqualLength(authenticators [][]byte, path *base.TransparentPath) error {
-	if len(path.Steps) != len(authenticators) {
+func checkEqualLength(authenticators [][]byte, steps base.PathSteps) error {
+	if len(steps) != len(authenticators) {
 		return serrors.New("wrong lengths: |path| != |authenticators|",
-			"path", len(path.Steps), "authenticators", len(authenticators))
+			"path", len(steps), "authenticators", len(authenticators))
 	}
 	return nil
 }

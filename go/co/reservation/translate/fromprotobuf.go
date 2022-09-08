@@ -26,16 +26,16 @@ import (
 	col "github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/serrors"
-	"github.com/scionproto/scion/go/lib/slayers/path"
+	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
 	"github.com/scionproto/scion/go/lib/util"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 )
 
-func SetupReq(msg *colpb.SegmentSetupRequest) (*segment.SetupReq, error) {
+func SetupReq(msg *colpb.SegmentSetupRequest, rawPath slayerspath.Path) (*segment.SetupReq, error) {
 	if msg == nil || msg.Base == nil || msg.Params == nil {
 		return nil, serrors.New("incomplete message", "msg", msg)
 	}
-	base, err := Request(msg.Base)
+	baseReq, err := Request(msg.Base)
 	if err != nil {
 		return nil, err
 	}
@@ -45,7 +45,7 @@ func SetupReq(msg *colpb.SegmentSetupRequest) (*segment.SetupReq, error) {
 		return nil, err
 	}
 	req := &segment.SetupReq{
-		Request:          *base,
+		Request:          *baseReq,
 		ExpirationTime:   expTime,
 		RLC:              rlc,
 		PathType:         pathType,
@@ -55,17 +55,20 @@ func SetupReq(msg *colpb.SegmentSetupRequest) (*segment.SetupReq, error) {
 		PathProps:        pathProps,
 		AllocTrail:       allocTrail,
 		ReverseTraveling: revTravel,
+		Steps:            PathSteps(msg.Params.Steps),
+		CurrentStep:      int(msg.Params.CurrentStep) + 1,
+		RawPath:          rawPath,
 	}
 	return req, nil
 }
 
 func E2ERequest(msg *colpb.E2ERequest) (*e2e.Request, error) {
-	base, err := Request(msg.Base)
+	baseReq, err := Request(msg.Base)
 	if err != nil {
 		return nil, err
 	}
 	return &e2e.Request{
-		Request: *base,
+		Request: *baseReq,
 		SrcHost: msg.SrcHost,
 		DstHost: msg.DstHost,
 	}, nil
@@ -88,6 +91,8 @@ func E2ESetupRequest(msg *colpb.E2ESetupRequest) (*e2e.SetupReq, error) {
 		Request:                *base,
 		SegmentRsvs:            segIds,
 		CurrentSegmentRsvIndex: int(msg.Params.CurrentSegment),
+		Steps:                  PathSteps(msg.Params.Steps),
+		CurrentStep:            int(msg.Params.CurrentStep),
 		RequestedBW:            col.BWCls(msg.RequestedBw),
 		AllocationTrail:        trail,
 	}, nil
@@ -169,17 +174,12 @@ func Request(msg *colpb.Request) (*base.Request, error) {
 		return nil, err
 	}
 	timestamp := util.SecsToTime(msg.Timestamp)
-	p, err := TransparentPath(msg.Path)
-	if err != nil {
-		return nil, err
-	}
 	return &base.Request{
 		MsgId: base.MsgId{
 			ID:        *ID(msg.Id),
 			Index:     idx,
 			Timestamp: timestamp,
 		},
-		Path:           p,
 		Authenticators: msg.Authenticators.Macs,
 	}, nil
 }
@@ -245,7 +245,7 @@ func ReservationLooks(msg []*colpb.ListReservationsResponse_ReservationLooks) (
 			MaxBW:          col.BWCls(l.Maxbw),
 			AllocBW:        col.BWCls(l.Allocbw),
 			Split:          col.SplitCls(l.Splitcls),
-			PathSteps:      TransparentPathSteps(l.PathSteps),
+			PathSteps:      PathSteps(l.PathSteps),
 		}
 	}
 	return res, nil
@@ -313,28 +313,8 @@ func AllocTrail(msg []*colpb.AllocationBead) col.AllocationBeads {
 	return trail
 }
 
-func TransparentPath(msg *colpb.TransparentPath) (*base.TransparentPath, error) {
-	if msg == nil {
-		return nil, nil
-	}
-	p, err := path.NewPath(path.Type(msg.PathType))
-	if err != nil {
-		return nil, err
-	}
-	if p != nil {
-		if err := p.DecodeFromBytes(msg.RawPath); err != nil {
-			return nil, err
-		}
-	}
-	return &base.TransparentPath{
-		CurrentStep: int(msg.CurrentStep),
-		Steps:       TransparentPathSteps(msg.Steps),
-		RawPath:     p,
-	}, nil
-}
-
-func TransparentPathSteps(msg []*colpb.PathStep) []base.PathStep {
-	steps := make([]base.PathStep, len(msg))
+func PathSteps(msg []*colpb.PathStep) base.PathSteps {
+	steps := make(base.PathSteps, len(msg))
 	for i, step := range msg {
 		steps[i].IA = addr.IA(step.Ia)
 		steps[i].Ingress = uint16(step.Ingress)
