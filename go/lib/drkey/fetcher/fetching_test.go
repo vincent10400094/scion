@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-package grpc_test
+package fetcher
 
 import (
 	"context"
@@ -29,7 +29,6 @@ import (
 
 	"github.com/scionproto/scion/go/lib/drkey"
 	"github.com/scionproto/scion/go/lib/xtest"
-	sd_grpc "github.com/scionproto/scion/go/pkg/daemon/drkey/grpc"
 	"github.com/scionproto/scion/go/pkg/grpc/mock_grpc"
 	cppb "github.com/scionproto/scion/go/pkg/proto/control_plane"
 	mock_cppb "github.com/scionproto/scion/go/pkg/proto/control_plane/mock_control_plane"
@@ -91,11 +90,11 @@ func TestGetHostHost(t *testing.T) {
 	dialer := mock_grpc.NewMockDialer(ctrl)
 	dialer.EXPECT().Dial(gomock.Any(), gomock.Any()).Return(conn, nil)
 
-	fetcher := sd_grpc.Fetcher{
+	fetcher := &FromCS{
 		Dialer: dialer,
 	}
 
 	meta := drkey.HostHostMeta{}
-	_, err = fetcher.HostHostKey(context.Background(), meta)
+	_, err = fetcher.DRKeyGetHostHostKey(context.Background(), meta)
 	require.NoError(t, err)
 }
