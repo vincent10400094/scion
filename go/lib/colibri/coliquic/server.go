@@ -81,14 +81,16 @@ func NewConnListener(listener quic.Listener) net.Listener {
 }
 
 type ServerStack struct {
-	Daemon       daemon.Connector
-	Router       snet.Router
-	Dialer       *libgrpc.QUICDialer
-	QUICListener net.Listener
-	TCPListener  net.Listener
-	serverAddr   *snet.UDPAddr
-	clientNet    *snet.SCIONNetwork
-	serverNet    *snet.SCIONNetwork
+	Daemon           daemon.Connector
+	Router           snet.Router
+	ClientPacketConn net.PacketConn
+	Dialer           *libgrpc.QUICDialer
+	Resolver         messenger.Resolver
+	QUICListener     net.Listener
+	TCPListener      net.Listener
+	serverAddr       *snet.UDPAddr
+	clientNet        *snet.SCIONNetwork
+	serverNet        *snet.SCIONNetwork
 }
 
 func NewServerStack(ctx context.Context, serverAddr *snet.UDPAddr, daemonAddr string) (
@@ -127,11 +129,21 @@ func (s *ServerStack) init(ctx context.Context, serverAddr *snet.UDPAddr, daemon
 	if err != nil {
 		return err
 	}
+	s.ClientPacketConn = client
+
 	// Generate throwaway self-signed TLS certificates. These DO NOT PROVIDE ANY SECURITY.
 	ephemeralTLSConfig, err := infraenv.GenerateTLSConfig()
 	if err != nil {
 		return err
 	}
+
+	s.Resolver = &svc.Resolver{
+		LocalIA: s.serverAddr.IA,
+		// Reuse the network with SCMP error support.
+		ConnFactory: s.clientNet.Dispatcher,
+		LocalIP:     s.serverAddr.Host.IP,
+	}
+
 	quicClientDialer := &squic.ConnDialer{
 		Conn:      client,
 		TLSConfig: ephemeralTLSConfig,
@@ -153,12 +165,10 @@ func (s *ServerStack) init(ctx context.Context, serverAddr *snet.UDPAddr, daemon
 		},
 	}
 
-	rawListener, err := quic.Listen(server, ephemeralTLSConfig, nil)
-	if err != nil {
-		return err
+	config := &quic.Config{
+		KeepAlive: false, // TODO(juagargi) study if it'd be more performant to keep alive
 	}
-	s.QUICListener = NewConnListener(rawListener)
-
+	s.QUICListener = NewListener(server, ephemeralTLSConfig, config)
 	return nil
 }
 

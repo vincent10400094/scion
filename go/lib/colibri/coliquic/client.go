@@ -23,6 +23,9 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/common"
+	"github.com/scionproto/scion/go/lib/infra/infraenv"
+	"github.com/scionproto/scion/go/lib/infra/messenger"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
@@ -31,13 +34,15 @@ import (
 	"github.com/scionproto/scion/go/lib/snet"
 	snetpath "github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/topology"
-	libgrpc "github.com/scionproto/scion/go/pkg/grpc"
+	"github.com/scionproto/scion/go/pkg/grpc"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 	dpb "github.com/scionproto/scion/go/pkg/proto/discovery"
 )
 
-type GRPCClientDialer interface {
-	libgrpc.Dialer
+type TopoLoader interface {
+	InterfaceIDs() []uint16
+	InterfaceInfoMap() map[common.IFIDType]topology.IFInfo
+	IA() addr.IA
 }
 
 // ServiceClientOperator can obtain COLIBRI gRPC clients to talk to the service.
@@ -48,8 +53,8 @@ type GRPCClientDialer interface {
 // - Ensure we return a gRPC client using the correct path (the path is used at the server to
 //   measure the BW used by the services).
 type ServiceClientOperator struct {
-	connDialer           GRPCClientDialer
-	neighboringColSvcs   map[uint16]*snet.UDPAddr // SvcCOL addr per interface ID
+	gRPCDialer           grpc.Dialer
+	neighboringColSvcs   map[uint16]*snet.UDPAddr // SvcCOL addr per egress interface ID
 	neighboringColSvcsMu sync.Mutex
 	neighboringIAs       map[uint16]addr.IA
 	srvResolver          ColSrvResolver
@@ -57,15 +62,31 @@ type ServiceClientOperator struct {
 	colServicesMutex     sync.Mutex
 }
 
-func NewServiceClientOperator(topo *topology.Loader, router snet.Router,
-	clientConn GRPCClientDialer) (*ServiceClientOperator, error) {
+func NewServiceClientOperator(topo TopoLoader, pconn net.PacketConn, router snet.Router,
+	resolver messenger.Resolver) (*ServiceClientOperator, error) {
+
+	tlsConfig, err := infraenv.GenerateTLSConfig()
+	if err != nil {
+		return nil, err
+	}
+	connDialer := NewPersistentQUIC(pconn, tlsConfig, nil)
+	gRPCDialer := &grpc.QUICDialer{
+		Dialer: connDialer,
+		Rewriter: &messenger.AddressRewriter{
+			// We never resolve addresses in the local AS, so pass a nil here.
+			SVCRouter:             nil,
+			Router:                router,
+			Resolver:              resolver,
+			SVCResolutionFraction: 1.337,
+		},
+	}
 
 	operator := &ServiceClientOperator{
-		connDialer:         clientConn,
+		gRPCDialer:         gRPCDialer, // persistent dialer
 		neighboringColSvcs: make(map[uint16]*snet.UDPAddr, len(topo.InterfaceIDs())),
 		srvResolver: &DiscoveryColSrvRes{
-			Router: router,
-			Dialer: clientConn,
+			Router:     router,
+			GRPCDialer: gRPCDialer, // persistent dialer
 		},
 		colServices: make(map[addr.IA]*snet.UDPAddr),
 	}
@@ -79,7 +100,7 @@ func (o *ServiceClientOperator) Neighbor(interfaceID uint16) addr.IA {
 	return o.neighboringIAs[interfaceID]
 }
 
-func (o *ServiceClientOperator) DialSvcCOL(ctx context.Context, dst *addr.IA) (
+func (o *ServiceClientOperator) ColibriClientForIA(ctx context.Context, dst *addr.IA) (
 	colpb.ColibriServiceClient, error) {
 
 	o.colServicesMutex.Lock()
@@ -94,13 +115,7 @@ func (o *ServiceClientOperator) DialSvcCOL(ctx context.Context, dst *addr.IA) (
 		}
 		o.colServices[*dst] = addr
 	}
-
-	conn, err := o.connDialer.Dial(ctx, addr)
-	if err != nil {
-		log.Debug("error dialing a grpc connection", "addr", addr, "err", err)
-		return nil, err
-	}
-	return colpb.NewColibriServiceClient(conn), nil
+	return o.colibriClient(ctx, addr)
 }
 
 // ColibriClient finds or creates a ColibriClient that can reach the next neighbor in
@@ -135,10 +150,15 @@ func (o *ServiceClientOperator) ColibriClient(
 		// E2EReservations must eventually travel through colibri path
 		// In that case they will follow same logic as above
 	}
+	return o.colibriClient(ctx, rAddr)
+}
 
-	conn, err := o.connDialer.Dial(ctx, rAddr)
+func (o *ServiceClientOperator) colibriClient(ctx context.Context, addr *snet.UDPAddr) (
+	colpb.ColibriServiceClient, error) {
+
+	conn, err := o.gRPCDialer.Dial(ctx, addr)
 	if err != nil {
-		log.Debug("error dialing a grpc connection", "addr", rAddr, "err", err)
+		log.Info("error dialing a grpc connection", "addr", addr, "err", err)
 		return nil, err
 	}
 	return colpb.NewColibriServiceClient(conn), nil
@@ -153,7 +173,7 @@ func (o *ServiceClientOperator) neighborAddr(egressID uint16) (*snet.UDPAddr, bo
 }
 
 // initialize waits in the background until this operator can obtain paths to all the remaining IAs.
-func (o *ServiceClientOperator) initialize(topo *topology.Loader) {
+func (o *ServiceClientOperator) initialize(topo TopoLoader) {
 	o.neighboringIAs = neighbors(topo)
 	o.neighboringIAs[0] = topo.IA() // interface with ID 0 is ourselves
 	// a new local copy to find their addresses and keep track of the remaining neighbors
@@ -163,7 +183,6 @@ func (o *ServiceClientOperator) initialize(topo *topology.Loader) {
 		log.Info("will initialize colibri client operator", "neighbor_count", len(remainingIAs))
 
 		for len(remainingIAs) > 0 {
-			time.Sleep(2 * time.Second)
 			log.Debug("colibri client operator initializing", "remaining", len(remainingIAs))
 			newNeighbors := make(map[uint16]*snet.UDPAddr)
 			remainingIAs = o.findNeighbors(newNeighbors, remainingIAs)
@@ -174,21 +193,21 @@ func (o *ServiceClientOperator) initialize(topo *topology.Loader) {
 				}
 				o.neighboringColSvcsMu.Unlock()
 			}
+			if len(remainingIAs) > 0 {
+				time.Sleep(2 * time.Second)
+			}
 		}
 		log.Info("colibri client operator initialization complete")
 		go func() {
 			defer log.HandlePanic()
 			o.periodicResolveNeighbors(topo)
 		}()
-		go func() {
-			defer log.HandlePanic()
-			o.periodicDiscoverServices()
-		}()
+		o.periodicDiscoverServices()
 	}()
 }
 
 // periodicResolveNeighbors periodically scans the topology and gets new paths for the neighbors.
-func (o *ServiceClientOperator) periodicResolveNeighbors(topo *topology.Loader) {
+func (o *ServiceClientOperator) periodicResolveNeighbors(topo TopoLoader) {
 	for {
 		time.Sleep(15 * time.Minute)
 		neighbors := neighbors(topo)
@@ -254,7 +273,7 @@ func (o *ServiceClientOperator) periodicDiscoverServices() {
 }
 
 // neighbors returns the neighboring IAs by egress interface ID.
-func neighbors(topo *topology.Loader) map[uint16]addr.IA {
+func neighbors(topo TopoLoader) map[uint16]addr.IA {
 	neighbors := make(map[uint16]addr.IA)
 	for ifid, info := range topo.InterfaceInfoMap() {
 		neighbors[uint16(ifid)] = info.IA
@@ -291,8 +310,8 @@ type ColSrvResolver interface {
 }
 
 type DiscoveryColSrvRes struct {
-	Router snet.Router
-	Dialer libgrpc.Dialer
+	Router     snet.Router
+	GRPCDialer grpc.Dialer
 }
 
 func (r *DiscoveryColSrvRes) ResolveColibriService(ctx context.Context, ia *addr.IA) (
@@ -309,13 +328,13 @@ func (r *DiscoveryColSrvRes) ResolveColibriService(ctx context.Context, ia *addr
 		NextHop: path.UnderlayNextHop(),
 		SVC:     addr.SvcDS,
 	}
-	conn, err := r.Dialer.Dial(ctx, ds)
+	conn, err := r.GRPCDialer.Dial(ctx, ds)
 	if err != nil {
 		return nil, err
 	}
 	defer conn.Close()
 	client := dpb.NewDiscoveryServiceClient(conn)
-	rep, err := client.ColibriServices(ctx, &dpb.ColibriServicesRequest{}, libgrpc.RetryProfile...)
+	rep, err := client.ColibriServices(ctx, &dpb.ColibriServicesRequest{})
 	if err != nil {
 		return nil, serrors.WrapStr("discovering colibri services", err)
 	}

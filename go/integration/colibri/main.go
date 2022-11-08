@@ -292,10 +292,11 @@ func (c client) run() int {
 	}
 	// read echo back
 	buff := make([]byte, 1500)
-	_, err = conn.Read(buff)
+	n, err := conn.Read(buff)
 	if err != nil {
 		integration.LogFatal("reading data", "err", err)
 	}
+	log.Debug("read echoed back", "msg", string(buff[:n]))
 	stitchable, err := c.listRsvs(ctx)
 	if err != nil {
 		integration.LogFatal("listing reservations", "err", err)

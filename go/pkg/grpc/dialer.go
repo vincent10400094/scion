@@ -164,7 +164,9 @@ func (d *QUICDialer) Dial(ctx context.Context, addr net.Addr) (*grpc.ClientConn,
 		return nil, serrors.New("wrong address type after svc resolution",
 			"type", common.TypeOf(addr))
 	}
-	dialer := func(context.Context, string) (net.Conn, error) {
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
+		// XXX(juagargi) use the ctx passed to the function; otherwise we can have
+		// canceled contexts when retrying to connect again
 		return d.Dialer.Dial(ctx, addr)
 	}
 	return grpc.DialContext(ctx, addr.String(),
@@ -194,7 +196,7 @@ func (d *TLSQUICDialer) Dial(ctx context.Context, addr net.Addr) (*grpc.ClientCo
 		return nil, serrors.New("wrong address type after svc resolution",
 			"type", common.TypeOf(addr))
 	}
-	dialer := func(context.Context, string) (net.Conn, error) {
+	dialer := func(ctx context.Context, _ string) (net.Conn, error) {
 		return d.Dialer.Dial(ctx, addr)
 	}
 	return grpc.DialContext(ctx, addr.String(),
