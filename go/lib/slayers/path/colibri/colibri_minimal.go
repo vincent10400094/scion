@@ -170,6 +170,18 @@ func (c *ColibriPathMinimal) Reverse() (path.Path, error) {
 	return c, err
 }
 
+func (c *ColibriPathMinimal) ReverseAsColibri() (*ColibriPathMinimal, error) {
+	if c == nil {
+		return nil, nil
+	}
+	p, err := c.Reverse()
+	var colPath *ColibriPathMinimal
+	if p != nil {
+		colPath = p.(*ColibriPathMinimal)
+	}
+	return colPath, err
+}
+
 func (c *ColibriPathMinimal) Len() int {
 	if c == nil || c.InfoField == nil || c.CurrHopField == nil {
 		return 0
@@ -220,4 +232,13 @@ func (c *ColibriPathMinimal) ToColibriPath() (*ColibriPath, error) {
 		return nil, err
 	}
 	return colibriPath, nil
+}
+
+func (c *ColibriPathMinimal) Clone() *ColibriPathMinimal {
+	return &ColibriPathMinimal{
+		PacketTimestamp: c.PacketTimestamp,
+		Raw:             append([]byte{}, c.Raw...),
+		InfoField:       c.InfoField.Clone(),
+		CurrHopField:    c.CurrHopField.Clone(),
+	}
 }

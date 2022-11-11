@@ -18,7 +18,6 @@ import (
 	"fmt"
 	"time"
 
-	base "github.com/scionproto/scion/go/co/reservation"
 	"github.com/scionproto/scion/go/co/reservation/segment"
 	"github.com/scionproto/scion/go/co/reservation/test"
 	"github.com/scionproto/scion/go/lib/addr"
@@ -85,20 +84,12 @@ func WithID(as, suffix string) ReservationMod {
 	}
 }
 
+// WithPath is used like WithPath("1-ff00:0:1", 2, 1, "1-ff00:0:2"))
 func WithPath(path ...interface{}) ReservationMod {
-	snetPath := test.NewSnetPath(path...)
-	steps, err := base.StepsFromSnet(snetPath)
-	if err != nil {
-		panic(err)
-	}
-	rawPath, err := base.PathFromDataplanePath(snetPath.Dataplane())
-	if err != nil {
-		panic(err)
-	}
+	steps := test.NewSteps(path...)
 	return func(rsv *segment.Reservation) *segment.Reservation {
 		rsv.Steps = steps
-		rsv.RawPath = rawPath
-		rsv.Ingress, rsv.Egress = base.InEgFromDataplanePath(rsv.RawPath)
+		rsv.TransportPath = test.NewColPathMin(steps)
 		return rsv
 	}
 }
@@ -106,10 +97,10 @@ func WithPath(path ...interface{}) ReservationMod {
 func WithIngressEgress(ig, eg int) ReservationMod {
 	return func(rsv *segment.Reservation) *segment.Reservation {
 		if ig > 0 {
-			rsv.Ingress = uint16(ig)
+			rsv.Steps[rsv.CurrentStep].Ingress = uint16(ig)
 		}
 		if eg > 0 {
-			rsv.Egress = uint16(eg)
+			rsv.Steps[rsv.CurrentStep].Egress = uint16(eg)
 		}
 		return rsv
 	}
@@ -149,13 +140,34 @@ func WithActiveIndex(idx int) ReservationMod {
 	}
 }
 
+// WithNoActiveIndex resets the active index to confirmed, if any active index exists.
+func WithNoActiveIndex() ReservationMod {
+	return func(rsv *segment.Reservation) *segment.Reservation {
+		if act := rsv.ActiveIndex(); act != nil {
+			rsv.RemoveIndex(act.Idx)
+			newIdx := segment.Index{
+				Idx:        act.Idx,
+				Expiration: act.Expiration,
+				MinBW:      act.MinBW,
+				MaxBW:      act.MaxBW,
+				AllocBW:    act.AllocBW,
+				Token:      act.Token,
+			}
+			// the active reservation is always the first one: place newIdx there
+			rsv.Indices = append(append(rsv.Indices[:0:0], newIdx), rsv.Indices...)
+			rsv.SetIndexConfirmed(newIdx.Idx)
+		}
+		return rsv
+	}
+}
+
 func ConfirmAllIndices() ReservationMod {
 	return func(rsv *segment.Reservation) *segment.Reservation {
 		if rsv == nil || rsv.Indices.Len() == 0 {
 			return rsv
 		}
 		for _, idx := range rsv.Indices {
-			if idx.State() != segment.IndexActive {
+			if idx.State != segment.IndexActive {
 				if err := rsv.SetIndexConfirmed(idx.Idx); err != nil {
 					panic(err)
 				}

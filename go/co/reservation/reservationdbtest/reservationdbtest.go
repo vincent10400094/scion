@@ -71,7 +71,9 @@ func testNewSegmentRsv(ctx context.Context, t *testing.T, newDB func() backend.D
 	var err error
 	db := newDB()
 	r := newTestReservation(t)
-	r.Indices = segment.Indices{}
+	err = r.RemoveIndex(0)
+	require.NoError(t, err)
+	require.Len(t, r.Indices, 0)
 	// no indices
 	err = db.NewSegmentRsv(ctx, r)
 	require.NoError(t, err)
@@ -82,11 +84,9 @@ func testNewSegmentRsv(ctx context.Context, t *testing.T, newDB func() backend.D
 	// at least one index, and change path
 	_, err = r.NewIndex(0, util.SecsToTime(10), 2, 3, 2, 2, reservation.CorePath)
 	require.NoError(t, err)
-	p := test.NewSnetPath("1-ff00:0:1", 2, 1, "1-ff00:0:2")
-	r.Steps, err = base.StepsFromSnet(p)
-	require.NoError(t, err)
-	r.RawPath, err = base.PathFromDataplanePath(p.Dataplane())
-	require.NoError(t, err)
+	r.Steps = test.NewSteps("1-ff00:0:1", 2, 1, "1-ff00:0:2")
+	r.TransportPath = test.NewColPathMin(r.Steps)
+
 	err = db.NewSegmentRsv(ctx, r)
 	require.NoError(t, err)
 	require.Equal(t, xtest.MustParseHexString("00000002"), r.ID.Suffix)
@@ -136,13 +136,10 @@ func testPersistSegmentRsv(ctx context.Context, t *testing.T, newDB func() backe
 	require.NoError(t, err)
 	require.Equal(t, r, rsv)
 	// change attributes
-	r.Ingress = 3
-	r.Egress = 4
-	p := test.NewSnetPath("1-ff00:0:1", 11, 1, "1-ff00:0:2")
-	r.Steps, err = base.StepsFromSnet(p)
-	require.NoError(t, err)
-	r.RawPath, err = base.PathFromDataplanePath(p.Dataplane())
-	require.NoError(t, err)
+	r.Steps[r.CurrentStep].Ingress = 3
+	r.Steps[r.CurrentStep].Egress = 4
+	r.Steps = test.NewSteps("1-ff00:0:1", 11, 1, "1-ff00:0:2")
+	r.TransportPath = test.NewColPathMin(r.Steps)
 	err = db.PersistSegmentRsv(ctx, r)
 	require.NoError(t, err)
 	rsv, err = db.GetSegmentRsvFromID(ctx, &r.ID)
@@ -372,18 +369,18 @@ func testGetAllSegmentRsvs(ctx context.Context, t *testing.T, newDB func() backe
 	require.Empty(t, rsvs)
 	// insert in1,eg1 ; in2,eg1 ; in1,eg2
 	r1 := newTestReservation(t)
-	r1.Ingress = 11
-	r1.Egress = 12
+	r1.Steps[r1.CurrentStep].Ingress = 11
+	r1.Steps[r1.CurrentStep].Egress = 12
 	err = db.NewSegmentRsv(ctx, r1)
 	require.NoError(t, err)
 	r2 := newTestReservation(t)
-	r2.Ingress = 21
-	r2.Egress = 12
+	r2.Steps[r2.CurrentStep].Ingress = 21
+	r2.Steps[r2.CurrentStep].Egress = 12
 	err = db.NewSegmentRsv(ctx, r2)
 	require.NoError(t, err)
 	r3 := newTestReservation(t)
-	r3.Ingress = 11
-	r3.Egress = 22
+	r3.Steps[r3.CurrentStep].Ingress = 11
+	r3.Steps[r3.CurrentStep].Egress = 22
 	err = db.NewSegmentRsv(ctx, r3)
 	require.NoError(t, err)
 	// retrieve them
@@ -397,34 +394,38 @@ func testGetSegmentRsvsFromIFPair(ctx context.Context, t *testing.T, newDB func(
 	db := newDB()
 	// insert in1,e1 ; in2,e1 ; in1,e2
 	r1 := newTestReservation(t)
-	r1.Ingress = 11
-	r1.Egress = 12
+	r1.Steps[r1.CurrentStep].Ingress = 11
+	r1.Steps[r1.CurrentStep].Egress = 12
 	err := db.NewSegmentRsv(ctx, r1)
 	require.NoError(t, err)
 	r2 := newTestReservation(t)
-	r2.Ingress = 21
-	r2.Egress = 12
+	r2.Steps[r2.CurrentStep].Ingress = 21
+	r2.Steps[r2.CurrentStep].Egress = 12
 	err = db.NewSegmentRsv(ctx, r2)
 	require.NoError(t, err)
 	r3 := newTestReservation(t)
-	r3.Ingress = 11
-	r3.Egress = 22
+	r3.Steps[r3.CurrentStep].Ingress = 11
+	r3.Steps[r3.CurrentStep].Egress = 22
 	err = db.NewSegmentRsv(ctx, r3)
 	require.NoError(t, err)
 	// query with a specific pair
-	rsvs, err := db.GetSegmentRsvsFromIFPair(ctx, &r1.Ingress, &r1.Egress)
+	var ig, eg uint16
+	ig, eg = r1.Ingress(), r1.Egress()
+	rsvs, err := db.GetSegmentRsvsFromIFPair(ctx, &ig, &eg)
 	require.NoError(t, err)
 	require.Len(t, rsvs, 1)
 	expected := []*segment.Reservation{r1}
 	require.ElementsMatch(t, expected, rsvs)
 	// any ingress
-	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, nil, &r1.Egress)
+	eg = r1.Egress()
+	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, nil, &eg)
 	require.NoError(t, err)
 	require.Len(t, rsvs, 2)
 	expected = []*segment.Reservation{r1, r2}
 	require.ElementsMatch(t, expected, rsvs)
 	// any egress
-	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &r1.Ingress, nil)
+	ig = r1.Ingress()
+	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &ig, nil)
 	require.NoError(t, err)
 	require.Len(t, rsvs, 2)
 	expected = []*segment.Reservation{r1, r3}
@@ -451,7 +452,9 @@ func testDeleteSegmentRsv(ctx context.Context, t *testing.T, newDB func() backen
 	require.Nil(t, rsv)
 	// with no indices
 	r = newTestReservation(t)
-	r.Indices = segment.Indices{}
+	err = r.RemoveIndex(0)
+	require.NoError(t, err)
+	require.Len(t, r.Indices, 0)
 	err = db.NewSegmentRsv(ctx, r)
 	require.NoError(t, err)
 	err = db.DeleteSegmentRsv(ctx, &r.ID)
@@ -532,7 +535,9 @@ func testDeleteExpiredIndices(ctx context.Context, t *testing.T, newDB func() ba
 	c, err := db.DeleteExpiredIndices(ctx, util.SecsToTime(1))
 	require.NoError(t, err)
 	require.Equal(t, 0, c)
-	rsvs, err := db.GetSegmentRsvsFromIFPair(ctx, &r.Ingress, &r.Egress) // get all seg rsvs
+	var ig, eg uint16
+	ig, eg = r.Ingress(), r.Egress()
+	rsvs, err := db.GetSegmentRsvsFromIFPair(ctx, &ig, &eg) // get all seg rsvs
 	require.NoError(t, err)
 	require.Len(t, rsvs, 4)
 	e2es := getAllE2ERsvsOnSegmentRsvs(ctx, t, db, segIds)
@@ -541,7 +546,8 @@ func testDeleteExpiredIndices(ctx context.Context, t *testing.T, newDB func() ba
 	c, err = db.DeleteExpiredIndices(ctx, util.SecsToTime(2))
 	require.NoError(t, err)
 	require.Equal(t, 1, c)
-	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &r.Ingress, &r.Egress)
+	ig, eg = r.Ingress(), r.Egress()
+	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &ig, &eg)
 	require.NoError(t, err)
 	require.Len(t, rsvs, 4)
 	e2es = getAllE2ERsvsOnSegmentRsvs(ctx, t, db, segIds)
@@ -550,7 +556,8 @@ func testDeleteExpiredIndices(ctx context.Context, t *testing.T, newDB func() ba
 	c, err = db.DeleteExpiredIndices(ctx, util.SecsToTime(3))
 	require.NoError(t, err)
 	require.Equal(t, 1, c)
-	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &r.Ingress, &r.Egress)
+	ig, eg = r.Ingress(), r.Egress()
+	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &ig, &eg)
 	require.NoError(t, err)
 	require.Len(t, rsvs, 3)
 	e2es = getAllE2ERsvsOnSegmentRsvs(ctx, t, db, segIds)
@@ -559,7 +566,8 @@ func testDeleteExpiredIndices(ctx context.Context, t *testing.T, newDB func() ba
 	c, err = db.DeleteExpiredIndices(ctx, util.SecsToTime(4))
 	require.NoError(t, err)
 	require.Equal(t, 2, c)
-	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &r.Ingress, &r.Egress)
+	ig, eg = r.Ingress(), r.Egress()
+	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &ig, &eg)
 	require.NoError(t, err)
 	require.Len(t, rsvs, 2)
 	e2es = getAllE2ERsvsOnSegmentRsvs(ctx, t, db, segIds)
@@ -568,7 +576,8 @@ func testDeleteExpiredIndices(ctx context.Context, t *testing.T, newDB func() ba
 	c, err = db.DeleteExpiredIndices(ctx, util.SecsToTime(5))
 	require.NoError(t, err)
 	require.Equal(t, 2, c)
-	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &r.Ingress, &r.Egress)
+	ig, eg = r.Ingress(), r.Egress()
+	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &ig, &eg)
 	require.NoError(t, err)
 	require.Len(t, rsvs, 2)
 	e2es = getAllE2ERsvsOnSegmentRsvs(ctx, t, db, segIds)
@@ -577,7 +586,8 @@ func testDeleteExpiredIndices(ctx context.Context, t *testing.T, newDB func() ba
 	c, err = db.DeleteExpiredIndices(ctx, util.SecsToTime(6))
 	require.NoError(t, err)
 	require.Equal(t, 2, c)
-	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &r.Ingress, &r.Egress)
+	ig, eg = r.Ingress(), r.Egress()
+	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &ig, &eg)
 	require.NoError(t, err)
 	require.Len(t, rsvs, 2)
 	e2es = getAllE2ERsvsOnSegmentRsvs(ctx, t, db, segIds)
@@ -586,7 +596,8 @@ func testDeleteExpiredIndices(ctx context.Context, t *testing.T, newDB func() ba
 	c, err = db.DeleteExpiredIndices(ctx, util.SecsToTime(7))
 	require.NoError(t, err)
 	require.Equal(t, 2, c)
-	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &r.Ingress, &r.Egress)
+	ig, eg = r.Ingress(), r.Egress()
+	rsvs, err = db.GetSegmentRsvsFromIFPair(ctx, &ig, &eg)
 	require.NoError(t, err)
 	require.Len(t, rsvs, 0)
 	e2es = getAllE2ERsvsOnSegmentRsvs(ctx, t, db, segIds)
@@ -1005,7 +1016,7 @@ func testGetInterfaceUsage(ctx context.Context, t *testing.T, newDB func() backe
 	// add a reservation 0->2 bwcls 3:
 	rsv = newTestReservation(t)
 	rsv.ID.Suffix[0]++
-	rsv.Egress = 2
+	rsv.Steps[rsv.CurrentStep].Egress = 2
 	rsv.Indices[0].AllocBW, rsv.Indices[0].MaxBW, rsv.Indices[0].Token.InfoField.BWCls = 3, 3, 3
 	err = db.PersistSegmentRsv(ctx, rsv)
 	require.NoError(t, err)
@@ -1040,28 +1051,28 @@ func testStatefulTables(ctx context.Context, t *testing.T, newDB func() backend.
 	db := newDB()
 	rsv := newTestReservation(t)
 	// empty interface usage tables
-	bw, err := db.GetInterfaceUsageIngress(ctx, rsv.Ingress)
+	bw, err := db.GetInterfaceUsageIngress(ctx, rsv.Ingress())
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), bw)
-	bw, err = db.GetInterfaceUsageEgress(ctx, rsv.Egress)
+	bw, err = db.GetInterfaceUsageEgress(ctx, rsv.Egress())
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), bw)
 	// insert a reservation
 	err = db.PersistSegmentRsv(ctx, rsv)
 	require.NoError(t, err)
-	bw, err = db.GetInterfaceUsageIngress(ctx, rsv.Ingress)
+	bw, err = db.GetInterfaceUsageIngress(ctx, rsv.Ingress())
 	require.NoError(t, err)
 	require.Equal(t, rsv.MaxBlockedBW(), bw)
-	bw, err = db.GetInterfaceUsageEgress(ctx, rsv.Egress)
+	bw, err = db.GetInterfaceUsageEgress(ctx, rsv.Egress())
 	require.NoError(t, err)
 	require.Equal(t, rsv.MaxBlockedBW(), bw)
 	// cleanup everything, leave empty tables again
 	err = db.DeleteSegmentRsv(ctx, &rsv.ID)
 	require.NoError(t, err)
-	bw, err = db.GetInterfaceUsageIngress(ctx, rsv.Ingress)
+	bw, err = db.GetInterfaceUsageIngress(ctx, rsv.Ingress())
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), bw)
-	bw, err = db.GetInterfaceUsageEgress(ctx, rsv.Egress)
+	bw, err = db.GetInterfaceUsageEgress(ctx, rsv.Egress())
 	require.NoError(t, err)
 	require.Equal(t, uint64(0), bw)
 	// empty tables again
@@ -1129,23 +1140,18 @@ func newTestReservation(t *testing.T) *segment.Reservation {
 	t.Helper()
 	r := segment.NewReservation(xtest.MustParseAS("ff00:0:1"))
 	//only set so that validate does not panic
-	p := test.NewSnetPath("1-ff00:0:1", 1, 1, "1-ff00:0:2")
-	r.Steps, err = base.StepsFromSnet(p)
-	if err != nil {
-		panic(err)
-	}
-	r.RawPath, err = base.PathFromDataplanePath(p.Dataplane())
-	if err != nil {
-		panic(err)
-	}
-	r.Ingress = 0
-	r.Egress = 1
+	r.Steps = test.NewSteps("1-ff00:0:1", 1, 1, "1-ff00:0:2")
+	r.TransportPath = test.NewColPathMin(r.Steps)
+	r.Steps[r.CurrentStep].Ingress = 0
+	r.Steps[r.CurrentStep].Egress = 1
 	r.TrafficSplit = 3
 	r.PathEndProps = reservation.EndLocal | reservation.StartLocal
 	expTime := util.SecsToTime(1)
 	_, err = r.NewIndex(0, expTime, 1, 3, 2, 5, reservation.CorePath)
 	require.NoError(t, err)
 	err = r.SetIndexConfirmed(0)
+	require.NoError(t, err)
+	err = r.SetIndexActive(0)
 	require.NoError(t, err)
 	return r
 }

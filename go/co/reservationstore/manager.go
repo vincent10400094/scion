@@ -27,36 +27,12 @@ import (
 	"github.com/scionproto/scion/go/co/reservation/segment"
 	"github.com/scionproto/scion/go/co/reservationstorage"
 	"github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/log"
-	"github.com/scionproto/scion/go/lib/periodic"
 	"github.com/scionproto/scion/go/lib/serrors"
-	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
+	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/snet"
 )
-
-// Manager is what a colibri manager requires to expose.
-type Manager interface {
-	periodic.Task
-	Now() time.Time
-	LocalIA() addr.IA
-	// TODO(juagargi) move to sub interface, e.g. pather, comms manager,...
-	PathsTo(ctx context.Context, dst addr.IA) ([]snet.Path, error)
-	GetReservationsAtSource(ctx context.Context, dst addr.IA) ([]*segment.Reservation, error)
-	SetupRequest(ctx context.Context, req *segment.SetupReq) error
-	SetupManyRequest(ctx context.Context, reqs []*segment.SetupReq) []error
-	ActivateRequest(
-		ctx context.Context,
-		req *base.Request,
-		steps base.PathSteps,
-		path slayerspath.Path,
-	) error
-	ActivateManyRequest(
-		ctx context.Context,
-		reqs []*base.Request,
-		stepsCollection []base.PathSteps,
-		paths []slayerspath.Path,
-	) []error
-}
 
 // manager takes care of the health of the segment reservations.
 type manager struct {
@@ -73,8 +49,8 @@ type manager struct {
 	router              snet.Router
 }
 
-func NewColibriManager(localIA addr.IA, router snet.Router, store reservationstorage.Store,
-	initial *conf.Reservations) (Manager, error) {
+func NewColibriManager(ctx context.Context, localIA addr.IA, router snet.Router,
+	store reservationstorage.Store, initial *conf.Reservations) (*manager, error) {
 
 	m := &manager{
 		now:        time.Now,
@@ -84,7 +60,7 @@ func NewColibriManager(localIA addr.IA, router snet.Router, store reservationsto
 		router:     router,
 	}
 
-	keeper, err := NewKeeper(m, initial)
+	keeper, err := NewKeeper(ctx, m, initial, localIA)
 	if err != nil {
 		return nil, err
 	}
@@ -103,6 +79,11 @@ func (m *manager) Run(ctx context.Context) {
 	if now.Before(m.wakeupTime) {
 		return
 	}
+	if !m.store.Ready() {
+		log.Info("colibri store not yet ready")
+		m.wakeupTime = m.now().Add(2 * time.Second)
+		return
+	}
 	wg := sync.WaitGroup{}
 	wg.Add(5)
 	go func() { // periodic report of segment reservations
@@ -114,24 +95,26 @@ func (m *manager) Run(ctx context.Context) {
 		// list segments
 		rsvs, err := m.store.ReportSegmentReservationsInDB(ctx)
 		if err != nil {
-			log.Error("reporting segment reservations in db", "err", err)
+			log.Info("error reporting segment reservations in db", "err", err)
 			return
 		}
 		table := make([]string, 0, len(rsvs)+1)
-		table = append(table, fmt.Sprintf("%24s %4s %15s %15s %8s %11s %s",
-			"id", "dir", "src", "dst", "ok_idxs", "rawpath_type", "path"))
+		table = append(table, fmt.Sprintf("%24s %4s %15s %4s %4s %20s %11s %s",
+			"id", "dir", "dst", "|i|", "act", "exp", "rawpath_type", "path"))
 		for _, r := range rsvs {
-			table = append(table, fmt.Sprintf("%24s %4s %15s %15s %8d %11s %s",
+			table = append(table, fmt.Sprintf("%24s %4s %15s %4d %4d %20s %11s %s",
 				r.ID.String(),
 				r.PathType,
-				r.Steps.SrcIA(),
 				r.Steps.DstIA(),
-				len(r.Indices.Filter(segment.NotConfirmed())),
-				r.RawPath.Type(),
+				r.Indices.Len(),
+				len(r.Indices.Filter(segment.NotActive())),
+				r.Indices.NewestExp().Format(time.Stamp),
+				r.TransportPath.Type(),
 				r.Steps))
 		}
 		if len(rsvs) > 0 {
-			log.Debug("----------- colibri segments ------------\n" + strings.Join(table, "\n"))
+			log.Debug("----------- colibri segments ------------\n" + strings.Join(table, "\n") +
+				"\n" + strings.Repeat("-", 150))
 		}
 	}()
 	go func() { // periodic report of e2e reservations
@@ -143,7 +126,7 @@ func (m *manager) Run(ctx context.Context) {
 		// list e2e reservations
 		rsvs, err := m.store.ReportE2EReservationsInDB(ctx)
 		if err != nil {
-			log.Error("reporting e2e reservations in db", "err", err)
+			log.Info("error reporting e2e reservations in db", "err", err)
 			return
 		}
 		table := make([]string, 0, len(rsvs)+1)
@@ -181,7 +164,7 @@ func (m *manager) Run(ctx context.Context) {
 
 		wakeupTime, err := m.keeper.OneShot(ctx)
 		if err != nil {
-			logger.Error("while keeping the reservations", "err", err)
+			logger.Info("error while keeping the reservations", "err", err)
 		}
 		logger.Info("will wait until the specified time", "wakeup_time", wakeupTime)
 		m.wakeupKeeper = wakeupTime
@@ -194,7 +177,7 @@ func (m *manager) Run(ctx context.Context) {
 		}
 		n, wakeupTime, err := m.store.DeleteExpiredIndices(ctx, m.now())
 		if err != nil {
-			logger.Error("deleting expired indices", "deleted_count", n, "err", err)
+			logger.Info("error deleting expired indices", "deleted_count", n, "err", err)
 		}
 		if n > 0 {
 			logger.Debug("deleted expired indices", "count", n)
@@ -212,7 +195,7 @@ func (m *manager) Run(ctx context.Context) {
 		}
 		n, wakeupTime, err := m.store.DeleteExpiredAdmissionEntries(ctx, m.now())
 		if err != nil {
-			logger.Error("deleting expired admission list entries", "err", err)
+			logger.Info("error deleting expired admission list entries", "err", err)
 		}
 		if n > 0 {
 			logger.Debug("deleted expired indices", "count", n)
@@ -232,12 +215,9 @@ func (m *manager) Run(ctx context.Context) {
 		m.wakeupAdmissionList)
 }
 
-func (m *manager) Now() time.Time {
-	return m.now()
-}
-
-func (m *manager) LocalIA() addr.IA {
-	return m.localIA
+func (m *manager) DeleteExpiredIndices(ctx context.Context) error {
+	_, _, err := m.store.DeleteExpiredIndices(ctx, m.now())
+	return err
 }
 
 func (m *manager) PathsTo(ctx context.Context, dst addr.IA) ([]snet.Path, error) {
@@ -247,81 +227,63 @@ func (m *manager) PathsTo(ctx context.Context, dst addr.IA) ([]snet.Path, error)
 	return paths, err
 }
 
-func (m *manager) GetReservationsAtSource(ctx context.Context, dst addr.IA) (
+func (m *manager) GetReservationsAtSource(ctx context.Context) (
 	[]*segment.Reservation, error) {
 
-	return m.store.GetReservationsAtSource(ctx, dst)
+	return m.store.GetReservationsAtSource(ctx)
 }
 
+// SetupRequest expects the steps to always go from src->dst, also for down-path. E.g.
+// a down-path SegR A<-B<-C is transported with a scion path A->B, but the steps are C,B,A .
 func (m *manager) SetupRequest(ctx context.Context, req *segment.SetupReq) error {
+	// setup/renew reservation (new temporary index in both cases)
 	err := m.store.InitSegmentReservation(ctx, req)
 	if err != nil {
 		return err
 	}
 	// confirm new index
 	confirmReq := base.NewRequest(m.now(), &req.Reservation.ID, req.Index, len(req.Steps))
-	res, err := m.store.InitConfirmSegmentReservation(ctx, confirmReq, req.Steps, req.RawPath)
+	if err = req.Reservation.SetIndexConfirmed(req.Index); err != nil {
+		return err
+	}
+	// because the store expects the steps[0] to always be the initiator (even for down-path
+	// SegRs), we need to reverse the steps and path if the SegR is of down-path type
+	steps := req.Steps
+	if req.PathType == reservation.DownPath {
+		steps = steps.Reverse()
+	}
+	res, err := m.store.InitConfirmSegmentReservation(ctx, confirmReq, steps, req.TransportPath)
 	if err != nil || !res.Success() {
-		log.Info("failed to confirm the index", "id", req.ID, "idx", req.Index,
-			"err", err, "res", res)
+		origErr := err
+		if res != nil && !res.Success() {
+			origErr = fmt.Errorf(res.(*base.ResponseFailure).Message)
+		}
+		log.Info("error confirming index", "id", req.ID, "idx", req.Index,
+			"err", origErr, "res_failure", res != nil && !res.Success())
+		// rollback the index state
+		i, err := base.FindIndex(req.Reservation.Indices, req.Index)
+		if err == nil {
+			req.Reservation.Indices[i].State = segment.IndexTemporary
+		}
+		return serrors.WrapStr("failed to confirm the index", origErr)
 	}
 	return err
 }
 
-func (m *manager) SetupManyRequest(ctx context.Context, reqs []*segment.SetupReq) []error {
-	wg := sync.WaitGroup{}
-	wg.Add(len(reqs))
-	errs := make([]error, len(reqs))
-	for i, req := range reqs {
-		i, req := i, req
-		go func() {
-			defer log.HandlePanic()
-			defer wg.Done()
-			errs[i] = m.SetupRequest(ctx, req)
-		}()
+func (m *manager) ActivateRequest(ctx context.Context, req *base.Request, steps base.PathSteps,
+	trasportPath *colpath.ColibriPathMinimal, reverseTraveling bool) error {
+
+	if reverseTraveling {
+		steps = steps.Reverse()
 	}
-	wg.Wait()
-	return errs
-}
-
-func (m *manager) ActivateRequest(
-	ctx context.Context,
-	req *base.Request,
-	steps base.PathSteps,
-	path slayerspath.Path,
-) error {
-
-	res, err := m.store.InitActivateSegmentReservation(ctx, req, steps, path)
+	res, err := m.store.InitActivateSegmentReservation(ctx, req, steps, trasportPath)
 	if err != nil {
 		return err
 	}
 	if !res.Success() {
-		failure := res.(*base.ResponseFailure)
-		return serrors.New("error activating index", "msg", failure.Message)
+		return serrors.New("error activating index", "msg", res.(*base.ResponseFailure).Message)
 	}
 	return nil
-}
-
-func (m *manager) ActivateManyRequest(
-	ctx context.Context,
-	reqs []*base.Request,
-	stepsCollection []base.PathSteps,
-	paths []slayerspath.Path,
-) []error {
-
-	wg := sync.WaitGroup{}
-	wg.Add(len(reqs))
-	errs := make([]error, len(reqs))
-	for i := range reqs {
-		i, req, step, path := i, reqs[i], stepsCollection[i], paths[i]
-		go func() {
-			defer log.HandlePanic()
-			defer wg.Done()
-			errs[i] = m.ActivateRequest(ctx, req, step, path)
-		}()
-	}
-	wg.Wait()
-	return errs
 }
 
 func findEarliest(times ...time.Time) time.Time {

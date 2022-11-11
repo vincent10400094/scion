@@ -27,7 +27,6 @@ import (
 	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/stats"
 
-	"github.com/scionproto/scion/go/co/reservation"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/daemon"
@@ -37,6 +36,7 @@ import (
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/snet"
+	utilp "github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/snet/squic"
 	"github.com/scionproto/scion/go/lib/sock/reliable"
 	"github.com/scionproto/scion/go/lib/sock/reliable/reconnect"
@@ -54,7 +54,7 @@ func GetColibriPath(session quic.Session) (*colibri.ColibriPath, error) {
 	netAddr := session.RemoteAddr()
 	addr, _ := netAddr.(*snet.UDPAddr)
 	if addr != nil {
-		cp, err := reservation.PathFromDataplanePath(addr.Path)
+		cp, err := utilp.SnetToDataplanePath(addr.Path)
 		if err != nil {
 			return nil, err
 		}
@@ -248,7 +248,7 @@ func UsageFromContext(ctx context.Context) (bool, uint64, error) {
 	if !ok {
 		return false, 0, serrors.New("could not retrieve peer from context")
 	}
-	if raw := colibriRawPath(peer.Addr); raw != nil {
+	if raw := colibriTransportPath(peer.Addr); raw != nil {
 		usage, ok := handler.popUsage(raw)
 		if !ok {
 			return true, 0, serrors.New("could not retrieve this peer from stats handler",
@@ -281,20 +281,20 @@ func (h *statsHandler) HandleRPC(ctx context.Context, st stats.RPCStats) {
 		// not a SCION family address
 		return
 	}
-	peerRaw := colibriRawPath(peer.Addr)
+	peerRaw := colibriTransportPath(peer.Addr)
 	prev := ctx.Value(bandwidthKey{})
 	if prev == nil || prev.(*snet.UDPAddr) == nil {
 		return
 	}
-	prevRaw := colibriRawPath(prev.(*snet.UDPAddr))
+	prevRaw := colibriTransportPath(prev.(*snet.UDPAddr))
 	if prevRaw == nil || !bytes.Equal(peerRaw, prevRaw) {
-		logger.Error("value from context not matching stats handler",
+		logger.Info("error value from context not matching stats handler",
 			"ctx_value", prev, "peer_addr", peer.Addr)
 		return
 	}
 	handlerCtx := ctx.Value(statsHandlerKey{})
 	if handlerCtx == nil || handlerCtx != h {
-		logger.Error("handler from context not matching stats handler",
+		logger.Info("error handler from context not matching stats handler",
 			"ctx_handler", handlerCtx, "handler", h, "peer", peer.Addr)
 		return
 	}
@@ -315,11 +315,11 @@ func (h *statsHandler) HandleRPC(ctx context.Context, st stats.RPCStats) {
 	case *stats.OutTrailer:
 		// this case is special: its wirelength is deprecated and never set
 	default:
-		logger.Error("unknown stats type", "type", common.TypeOf(st))
+		logger.Info("error unknown stats type", "type", common.TypeOf(st))
 		return
 	}
 	if size < 0 {
-		logger.Error("stats size is negative", "size", size, "peer", peer.Addr)
+		logger.Info("error stats size is negative", "size", size, "peer", peer.Addr)
 		return
 	}
 	h.addUsage(prevRaw, uint64(size))
@@ -328,7 +328,7 @@ func (h *statsHandler) HandleRPC(ctx context.Context, st stats.RPCStats) {
 func (h *statsHandler) TagConn(ctx context.Context, info *stats.ConnTagInfo) context.Context {
 	if info.RemoteAddr.(*snet.UDPAddr) != nil {
 		addr := info.RemoteAddr.(*snet.UDPAddr)
-		raw := colibriRawPath(addr)
+		raw := colibriTransportPath(addr)
 		if raw != nil {
 			h.addUsage(raw, 0)
 			// store a pointer to this stats handler in the context so that we can retrieve the
@@ -346,8 +346,8 @@ func (h *statsHandler) HandleConn(ctx context.Context, st stats.ConnStats) {}
 // popUsage returns the usage and the found indicator for a raw path in this statsHandler.
 // if found, it will be removed.
 // The call is intended to be used by one gRPC service call before its end.
-func (h *statsHandler) popUsage(rawPath []byte) (uint64, bool) {
-	key := string(rawPath)
+func (h *statsHandler) popUsage(transportPath []byte) (uint64, bool) {
+	key := string(transportPath)
 	h.m.Lock()
 	defer h.m.Unlock()
 	usage, found := h.usage[key]
@@ -373,17 +373,17 @@ func (ignoreSCMP) Handle(pkt *snet.Packet) error {
 	return nil
 }
 
-// colibriRawPath returns nil if a colibri path cannot be extracted from the address.
-func colibriRawPath(addr net.Addr) []byte {
+// colibriTransportPath returns nil if a colibri path cannot be extracted from the address.
+func colibriTransportPath(addr net.Addr) []byte {
 	if addr == nil || addr.(*snet.UDPAddr) == nil {
 		return nil
 	}
-	p, err := reservation.PathFromDataplanePath(addr.(*snet.UDPAddr).Path)
+	p, err := utilp.SnetToDataplanePath(addr.(*snet.UDPAddr).Path)
 	if err != nil || p == nil || p.Type() != colibri.PathType {
 		return nil
 	}
-	buff, err := reservation.PathToRaw(p)
-	if err != nil {
+	buff := make([]byte, p.Len())
+	if err := p.SerializeTo(buff); err != nil {
 		return nil
 	}
 	return buff

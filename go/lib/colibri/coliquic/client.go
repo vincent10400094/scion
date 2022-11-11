@@ -28,9 +28,7 @@ import (
 	"github.com/scionproto/scion/go/lib/infra/messenger"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
-	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
-	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
-	"github.com/scionproto/scion/go/lib/slayers/path/scion"
+	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/snet"
 	snetpath "github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/topology"
@@ -53,6 +51,7 @@ type TopoLoader interface {
 // - Ensure we return a gRPC client using the correct path (the path is used at the server to
 //   measure the BW used by the services).
 type ServiceClientOperator struct {
+	initialized          bool
 	gRPCDialer           grpc.Dialer
 	neighboringColSvcs   map[uint16]*snet.UDPAddr // SvcCOL addr per egress interface ID
 	neighboringColSvcsMu sync.Mutex
@@ -100,8 +99,14 @@ func (o *ServiceClientOperator) Neighbor(interfaceID uint16) addr.IA {
 	return o.neighboringIAs[interfaceID]
 }
 
-func (o *ServiceClientOperator) ColibriClientForIA(ctx context.Context, dst *addr.IA) (
-	colpb.ColibriServiceClient, error) {
+func (o *ServiceClientOperator) Initialized() bool {
+	o.neighboringColSvcsMu.Lock()
+	defer o.neighboringColSvcsMu.Unlock()
+	return o.initialized
+}
+
+func (o *ServiceClientOperator) ColibriClientForIA(ctx context.Context, dst *addr.IA,
+) (colpb.ColibriServiceClient, error) {
 
 	o.colServicesMutex.Lock()
 	defer o.colServicesMutex.Unlock()
@@ -118,15 +123,16 @@ func (o *ServiceClientOperator) ColibriClientForIA(ctx context.Context, dst *add
 	return o.colibriClient(ctx, addr)
 }
 
+// the client seems not to be working correctly (it dials to a wrong destination??)
+
 // ColibriClient finds or creates a ColibriClient that can reach the next neighbor in
 // the path passed as argument. The underneath connection will be COLIBRI or regular SCION,
 // depending on the type of the path passed as argument.
 func (o *ServiceClientOperator) ColibriClient(
 	ctx context.Context,
 	egressID uint16,
-	rawPath slayerspath.Path,
-) (
-	colpb.ColibriServiceClient, error) {
+	transportPath *colpath.ColibriPathMinimal,
+) (colpb.ColibriServiceClient, error) {
 
 	// egressID := transp.Steps[transp.CurrentStep].Egress
 	rAddr, ok := o.neighborAddr(egressID)
@@ -136,29 +142,30 @@ func (o *ServiceClientOperator) ColibriClient(
 	}
 	rAddr = rAddr.Copy() // preserve the original data
 
-	buf := make([]byte, rawPath.Len())
-	rawPath.SerializeTo(buf)
-
-	// prepare remote address with the new path
-	switch rawPath.Type() {
-	case scion.PathType: // don't touch the service path
-		//rAddr.Path = snetpath.SCION{Raw: buf}
-	case colibri.PathType:
+	// deleteme try to send using directly transportPath
+	// if transport is nil, just use a path obtained here (above thru neighborAddr)
+	switch {
+	case transportPath == nil:
+		log.Info("colibri client operator, first segment reservation setup", "egress", egressID)
+	case transportPath.Type() == colpath.PathType:
+		// prepare remote address with the new path
+		buf := make([]byte, transportPath.Len())
+		transportPath.SerializeTo(buf)
 		rAddr.Path = snetpath.Colibri{Raw: buf}
 	default:
-		// Do nothing when e.g. empty path for E2EReservations
-		// E2EReservations must eventually travel through colibri path
-		// In that case they will follow same logic as above
+		// nothing but colibri or nil is accepted
+		return nil, serrors.New("error in client operator: not a valid transport",
+			"path_type", transportPath.Type())
 	}
 	return o.colibriClient(ctx, rAddr)
 }
 
-func (o *ServiceClientOperator) colibriClient(ctx context.Context, addr *snet.UDPAddr) (
+func (o *ServiceClientOperator) colibriClient(ctx context.Context, rAddr *snet.UDPAddr) (
 	colpb.ColibriServiceClient, error) {
 
-	conn, err := o.gRPCDialer.Dial(ctx, addr)
+	conn, err := o.gRPCDialer.Dial(ctx, rAddr)
 	if err != nil {
-		log.Info("error dialing a grpc connection", "addr", addr, "err", err)
+		log.Info("error dialing a grpc connection", "addr", rAddr, "err", err)
 		return nil, err
 	}
 	return colpb.NewColibriServiceClient(conn), nil
@@ -197,6 +204,9 @@ func (o *ServiceClientOperator) initialize(topo TopoLoader) {
 				time.Sleep(2 * time.Second)
 			}
 		}
+		o.neighboringColSvcsMu.Lock()
+		o.initialized = true
+		o.neighboringColSvcsMu.Unlock()
 		log.Info("colibri client operator initialization complete")
 		go func() {
 			defer log.HandlePanic()
@@ -230,7 +240,7 @@ func (o *ServiceClientOperator) periodicResolveNeighbors(topo TopoLoader) {
 			for id, ia := range remainingIAs {
 				missing = append(missing, fmt.Sprintf("%s on ifid %d", ia, id))
 			}
-			log.Error("periodic resolve neighbors: neighbors without address",
+			log.Info("error periodic resolve neighbors: neighbors without address",
 				"missing_count", len(remainingIAs), "total", len(neighbors),
 				"missing", strings.Join(missing, ","))
 		} else {

@@ -22,7 +22,9 @@ import (
 
 	"github.com/scionproto/scion/go/co/reservation/segment"
 	"github.com/scionproto/scion/go/co/reservation/segmenttest"
+	"github.com/scionproto/scion/go/co/reservation/test"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
+	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/util"
 )
 
@@ -36,7 +38,7 @@ func TestNewIndex(t *testing.T) {
 	require.Equal(t, reservation.IndexNumber(0), idx)
 	require.Equal(t, idx, r.Indices[0].Idx)
 	require.Equal(t, expTime, r.Indices[0].Expiration)
-	require.Equal(t, segment.IndexTemporary, r.Indices[0].State())
+	require.Equal(t, segment.IndexTemporary, r.Indices[0].State)
 	require.Equal(t, reservation.BWCls(1), r.Indices[0].MinBW)
 	require.Equal(t, reservation.BWCls(3), r.Indices[0].MaxBW)
 	require.Equal(t, reservation.BWCls(2), r.Indices[0].AllocBW)
@@ -91,7 +93,7 @@ func TestReservationValidate(t *testing.T) {
 	require.Error(t, err)
 	// starts in this AS but ingress nonzero
 	r = segmenttest.NewReservation()
-	r.Ingress = 1
+	r.Steps[r.CurrentStep].Ingress = 1
 	err = r.Validate()
 	require.Error(t, err)
 	// Does not start in this AS but ingress empty
@@ -122,15 +124,15 @@ func TestSetIndexConfirmed(t *testing.T) {
 	r := segmenttest.NewReservation()
 	expTime := util.SecsToTime(1)
 	id, _ := r.NewIndex(0, expTime, 0, 0, 0, 0, reservation.CorePath)
-	require.Equal(t, segment.IndexTemporary, r.Indices[0].State())
+	require.Equal(t, segment.IndexTemporary, r.Indices[0].State)
 	err := r.SetIndexConfirmed(id)
 	require.NoError(t, err)
-	require.Equal(t, segment.IndexPending, r.Indices[0].State())
+	require.Equal(t, segment.IndexPending, r.Indices[0].State)
 
 	// confirm already confirmed
 	err = r.SetIndexConfirmed(id)
 	require.NoError(t, err)
-	require.Equal(t, segment.IndexPending, r.Indices[0].State())
+	require.Equal(t, segment.IndexPending, r.Indices[0].State)
 }
 
 func TestSetIndexActive(t *testing.T) {
@@ -146,7 +148,7 @@ func TestSetIndexActive(t *testing.T) {
 	r.SetIndexConfirmed(idx)
 	err = r.SetIndexActive(idx)
 	require.NoError(t, err)
-	require.Equal(t, segment.IndexActive, r.Indices[0].State())
+	require.Equal(t, segment.IndexActive, r.Indices[0].State)
 	require.Equal(t, 0, r.GetActiveIndexForTesting())
 
 	// already active
@@ -208,4 +210,175 @@ func TestMaxBlockedBW(t *testing.T) {
 	require.Equal(t, reservation.BWCls(1).ToKbps(), r.MaxBlockedBW())
 	r.Indices[0].AllocBW = 11
 	require.Equal(t, reservation.BWCls(11).ToKbps(), r.MaxBlockedBW())
+}
+
+func TestDeriveColibriPathAtSource(t *testing.T) {
+
+	cases := map[string]struct {
+		SegR *segment.Reservation
+	}{
+		"up": {
+			SegR: &segment.Reservation{
+				PathType:    reservation.UpPath,
+				Steps:       test.NewSteps("1-ff00:0:1", 1, 2, "1-ff00:0:2", 3, 4, "1-ff00:0:3"),
+				CurrentStep: 1,
+				ID:          *test.MustParseID("ff00:0:1", "01234567"),
+				Indices: segment.Indices{segment.Index{
+					Token: &reservation.Token{
+						InfoField: reservation.InfoField{
+							Idx:            1,
+							BWCls:          3,
+							ExpirationTick: reservation.TickFromTime(util.SecsToTime(1000)),
+						},
+						HopFields: []reservation.HopField{
+							{
+								Ingress: 0,
+								Egress:  1,
+							},
+							{
+								Ingress: 2,
+								Egress:  3,
+							},
+							{
+								Ingress: 4,
+								Egress:  0,
+							},
+						},
+					},
+				}},
+			},
+		},
+		"down": {
+			SegR: &segment.Reservation{
+				PathType:    reservation.DownPath,
+				Steps:       test.NewSteps("1-ff00:0:3", 4, 3, "1-ff00:0:2", 2, 1, "1-ff00:0:1"),
+				CurrentStep: 1,
+				ID:          *test.MustParseID("ff00:0:1", "01234567"),
+				Indices: segment.Indices{segment.Index{
+					Token: &reservation.Token{
+						InfoField: reservation.InfoField{
+							Idx:            1,
+							BWCls:          3,
+							ExpirationTick: reservation.TickFromTime(util.SecsToTime(1000)),
+						},
+						HopFields: []reservation.HopField{
+							{
+								Ingress: 0,
+								Egress:  4,
+							},
+							{
+								Ingress: 3,
+								Egress:  2,
+							},
+							{
+								Ingress: 1,
+								Egress:  0,
+							},
+						},
+					},
+				}},
+			},
+		},
+	}
+	for name, tc := range cases {
+		name, tc := name, tc
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			colibriKeys := test.InitColibriKeys(t, len(tc.SegR.Steps))
+			srcAS := tc.SegR.Steps.SrcIA().AS()
+			dstAS := tc.SegR.Steps.DstIA().AS()
+			test.TraverseASesAndStampMACs(t, tc.SegR, colibriKeys, srcAS, dstAS)
+			colPath := colibriMinimalToRegular(t, tc.SegR.DeriveColibriPathAtSource())
+			test.VerifyMACs(t, colPath, colibriKeys, srcAS, dstAS)
+		})
+	}
+}
+
+func TestDeriveColibriPathAtDestination(t *testing.T) {
+
+	cases := map[string]struct {
+		SegR *segment.Reservation
+	}{
+		"up": {
+			SegR: &segment.Reservation{
+				PathType:    reservation.UpPath,
+				Steps:       test.NewSteps("1-ff00:0:1", 1, 2, "1-ff00:0:2", 3, 4, "1-ff00:0:3"),
+				CurrentStep: 1,
+				ID:          *test.MustParseID("ff00:0:1", "01234567"),
+				Indices: segment.Indices{segment.Index{
+					Token: &reservation.Token{
+						InfoField: reservation.InfoField{
+							Idx:            1,
+							BWCls:          3,
+							ExpirationTick: reservation.TickFromTime(util.SecsToTime(1000)),
+						},
+						HopFields: []reservation.HopField{
+							{
+								Ingress: 0,
+								Egress:  1,
+							},
+							{
+								Ingress: 2,
+								Egress:  3,
+							},
+							{
+								Ingress: 4,
+								Egress:  0,
+							},
+						},
+					},
+				}},
+			},
+		},
+		"down": {
+			SegR: &segment.Reservation{
+				PathType:    reservation.DownPath,
+				Steps:       test.NewSteps("1-ff00:0:3", 4, 3, "1-ff00:0:2", 2, 1, "1-ff00:0:1"),
+				CurrentStep: 1,
+				ID:          *test.MustParseID("ff00:0:1", "01234567"),
+				Indices: segment.Indices{segment.Index{
+					Token: &reservation.Token{
+						InfoField: reservation.InfoField{
+							Idx:            1,
+							BWCls:          3,
+							ExpirationTick: reservation.TickFromTime(util.SecsToTime(1000)),
+						},
+						HopFields: []reservation.HopField{
+							{
+								Ingress: 0,
+								Egress:  4,
+							},
+							{
+								Ingress: 3,
+								Egress:  2,
+							},
+							{
+								Ingress: 1,
+								Egress:  0,
+							},
+						},
+					},
+				}},
+			},
+		},
+	}
+	for name, tc := range cases {
+		name, tc := name, tc
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			colibriKeys := test.InitColibriKeys(t, len(tc.SegR.Steps))
+			srcAS := tc.SegR.Steps.SrcIA().AS()
+			dstAS := tc.SegR.Steps.DstIA().AS()
+			test.TraverseASesAndStampMACs(t, tc.SegR, colibriKeys, srcAS, dstAS)
+			colPath := colibriMinimalToRegular(t, tc.SegR.DeriveColibriPathAtDestination())
+			test.VerifyMACs(t, colPath, colibriKeys, srcAS, dstAS)
+		})
+	}
+}
+
+func colibriMinimalToRegular(t *testing.T, min *colpath.ColibriPathMinimal) *colpath.ColibriPath {
+	require.NotNil(t, min)
+	colPath, err := min.ToColibriPath()
+	require.NoError(t, err)
+	return colPath
 }

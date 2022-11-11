@@ -24,43 +24,50 @@ import (
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
-	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
+	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 )
 
 // Store is the interface to interact with the reservation store.
 type Store interface {
+	Ready() bool
 	// ListReservations is used to get segments to other ASes.
 	ListReservations(ctx context.Context, dstIA addr.IA, pt reservation.PathType) (
 		[]*colibri.ReservationLooks, error)
 	AdmitSegmentReservation(
 		ctx context.Context,
 		req *sgt.SetupReq,
-		rawPath slayerspath.Path,
+		transportPath *colpath.ColibriPathMinimal,
 	) (sgt.SegmentSetupResponse, error)
 	ConfirmSegmentReservation(
 		ctx context.Context,
 		req *base.Request,
-		rawPath slayerspath.Path,
+		transportPath *colpath.ColibriPathMinimal,
 	) (base.Response, error)
 	ActivateSegmentReservation(
 		ctx context.Context,
 		req *base.Request,
-		rawPath slayerspath.Path,
+		transportPath *colpath.ColibriPathMinimal,
 	) (base.Response, error)
 	CleanupSegmentReservation(
 		ctx context.Context,
 		req *base.Request,
-		rawPath slayerspath.Path,
+		transportPath *colpath.ColibriPathMinimal,
 	) (base.Response, error)
 	TearDownSegmentReservation(
 		ctx context.Context,
 		req *base.Request,
-		rawPath slayerspath.Path,
+		transportPath *colpath.ColibriPathMinimal,
 	) (base.Response, error)
-	AdmitE2EReservation(ctx context.Context, req *e2e.SetupReq, rawPath slayerspath.Path) (
-		e2e.SetupResponse, error)
-	CleanupE2EReservation(ctx context.Context, req *e2e.Request, rawPath slayerspath.Path) (
-		base.Response, error)
+	AdmitE2EReservation(
+		ctx context.Context,
+		req *e2e.SetupReq,
+		transportPath *colpath.ColibriPathMinimal,
+	) (e2e.SetupResponse, error)
+	CleanupE2EReservation(
+		ctx context.Context,
+		req *e2e.Request,
+		transportPath *colpath.ColibriPathMinimal,
+	) (base.Response, error)
 
 	// DeleteExpiredIndices returns the number of indices deleted, and the time for the
 	// next expiration
@@ -71,7 +78,7 @@ type Store interface {
 
 	// GetReservationsAtSource is used by a reservation manager or keeper to know all
 	// reservations they must keep updated.
-	GetReservationsAtSource(ctx context.Context, dstIA addr.IA) ([]*sgt.Reservation, error)
+	GetReservationsAtSource(ctx context.Context) ([]*sgt.Reservation, error)
 	// ListStitchableSegments is used by the endhosts. It will rely on calls to ListReservations
 	// to this AS and other ASes.
 	ListStitchableSegments(ctx context.Context, dst addr.IA) (*colibri.StitchableSegments, error)
@@ -79,19 +86,19 @@ type Store interface {
 	InitSegmentReservation(ctx context.Context, req *sgt.SetupReq) error
 	// InitConfirmSegmentReservation initiates a confirm request.
 	InitConfirmSegmentReservation(ctx context.Context, req *base.Request,
-		steps base.PathSteps, rawPath slayerspath.Path) (
+		steps base.PathSteps, transportPath *colpath.ColibriPathMinimal) (
 		base.Response, error)
 
 	InitActivateSegmentReservation(ctx context.Context, req *base.Request,
-		steps base.PathSteps, rawPath slayerspath.Path) (
+		steps base.PathSteps, transportPath *colpath.ColibriPathMinimal) (
 		base.Response, error)
 
 	InitCleanupSegmentReservation(ctx context.Context, req *base.Request,
-		steps base.PathSteps, rawPath slayerspath.Path) (
+		steps base.PathSteps, transportPath *colpath.ColibriPathMinimal) (
 		base.Response, error)
 
 	InitTearDownSegmentReservation(ctx context.Context, req *base.Request,
-		steps base.PathSteps, rawPath slayerspath.Path) (
+		steps base.PathSteps, transportPath *colpath.ColibriPathMinimal) (
 		base.Response, error)
 
 	// -----------------------------------------------------------

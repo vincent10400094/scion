@@ -61,7 +61,7 @@ func realMain() int {
 
 	closeTracer, err := integration.InitTracer("end2end-" + integration.Mode)
 	if err != nil {
-		log.Error("Tracer initialization failed", "err", err)
+		log.Info("error tracer initialization failed", "err", err)
 		return 1
 	}
 	defer closeTracer()
@@ -120,7 +120,7 @@ func (s server) run() {
 		// Needed for integration test ready signal.
 		addr, err := net.ResolveUDPAddr("udp", conn.LocalAddr().String())
 		if err != nil {
-			log.Error("unable to parse listening address", "err", err)
+			log.Info("error unable to parse listening address", "err", err)
 		}
 		fmt.Printf("Port=%d\n", addr.Port)
 		fmt.Printf("%s%s\n\n", libint.ReadySignal, integration.Local.IA)
@@ -331,16 +331,16 @@ func (c client) run() int {
 			"type", common.TypeOf(raddr))
 	}
 	sraddrPath, _ := sraddr.GetPath()
-	sraddrRawPath, gotColPath := sraddrPath.Dataplane().(path.Colibri)
+	sraddrTransportPath, gotColPath := sraddrPath.Dataplane().(path.Colibri)
 	if !gotColPath {
 		sraddrReplyPath, ok := sraddrPath.Dataplane().(snet.RawReplyPath)
 		if ok {
 			colPath, ok := sraddrReplyPath.Path.(*colpath.ColibriPathMinimal)
 			if ok {
-				sraddrRawPath = path.Colibri{
+				sraddrTransportPath = path.Colibri{
 					Raw: make([]byte, colPath.Len()),
 				}
-				if err := colPath.SerializeTo(sraddrRawPath.Raw); err != nil {
+				if err := colPath.SerializeTo(sraddrTransportPath.Raw); err != nil {
 					integration.LogFatal("cannot serialize colibri path", "err", err)
 				}
 				gotColPath = true
@@ -350,8 +350,8 @@ func (c client) run() int {
 	if !gotColPath {
 		integration.LogFatal("non-colibri path type", "type", common.TypeOf(sraddrPath.Dataplane()))
 	}
-	if sraddrRawPath.Raw == nil {
-		integration.LogFatal("colibri path but empty raw", "path", sraddrRawPath)
+	if sraddrTransportPath.Raw == nil {
+		integration.LogFatal("colibri path but empty raw", "path", sraddrTransportPath)
 	}
 	// clean reservation up
 	if err = c.cleanRsv(ctx, &rsvID, 0, steps); err != nil {

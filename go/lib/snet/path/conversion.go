@@ -1,4 +1,4 @@
-// Copyright 2020 ETH Zurich, Anapaya Systems
+// Copyright 2022 ETH Zurich
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -11,15 +11,17 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-package segment
 
-func (r *Reservation) GetActiveIndexForTesting() int {
-	return r.activeIndex
-}
-func (r *Reservation) SetActiveIndexForTesting(index int) {
-	r.activeIndex = index
-}
+package path
 
-func (index *Index) SetStateForTesting(state IndexState) {
-	index.State = state
+import (
+	"github.com/scionproto/scion/go/lib/slayers"
+	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
+	"github.com/scionproto/scion/go/lib/snet"
+)
+
+func SnetToDataplanePath(p snet.DataplanePath) (slayerspath.Path, error) {
+	var s slayers.SCION
+	err := p.SetPath(&s)
+	return s.Path, err
 }

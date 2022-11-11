@@ -32,9 +32,9 @@ import (
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
-	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
-	"github.com/scionproto/scion/go/lib/slayers/path/empty"
+	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/snet"
+	utilp "github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/util"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 )
@@ -48,20 +48,21 @@ var _ colpb.ColibriServiceServer = (*ColibriService)(nil)
 func (s *ColibriService) SegmentSetup(ctx context.Context, msg *colpb.SegmentSetupRequest) (
 	*colpb.SegmentSetupResponse, error) {
 
-	path, err := extractPathIAFromCtx(ctx)
+	transportPath, err := colPathFromCtx(ctx)
 	if err != nil {
-		log.Error("setup segment", "err", err)
+		log.Info("error setup segment", "err", err)
 		return nil, err
 	}
-	req, err := translate.SetupReq(msg, path)
+	req, err := translate.SetupReq(msg, transportPath)
 	if err != nil {
-		log.Error("error unmarshalling", "err", err)
+		log.Info("error unmarshalling", "err", err)
 		// should send a message?
 		return nil, err
 	}
-	res, err := s.Store.AdmitSegmentReservation(ctx, req, path)
+	req.TakeStep() // a new hop has been traversed, take one more step (modify CurrentStep)
+	res, err := s.Store.AdmitSegmentReservation(ctx, req, transportPath)
 	if err != nil {
-		log.Error("colibri store returned an error", "err", err)
+		log.Info("error colibri store returned an error", "err", err)
 		// should send a message?
 		return nil, err
 	}
@@ -72,19 +73,19 @@ func (s *ColibriService) SegmentSetup(ctx context.Context, msg *colpb.SegmentSet
 func (s *ColibriService) ConfirmSegmentIndex(ctx context.Context,
 	msg *colpb.ConfirmSegmentIndexRequest) (*colpb.ConfirmSegmentIndexResponse, error) {
 
-	path, err := extractPathIAFromCtx(ctx)
+	transportPath, err := colPathFromCtx(ctx)
 	if err != nil {
-		log.Error("setup segment", "err", err)
+		log.Info("error setup segment", "err", err)
 		return nil, err
 	}
 	req, err := translate.Request(msg.Base)
 	if err != nil {
-		log.Error("error unmarshalling", "err", err)
+		log.Info("error unmarshalling", "err", err)
 		return nil, err
 	}
-	res, err := s.Store.ConfirmSegmentReservation(ctx, req, path)
+	res, err := s.Store.ConfirmSegmentReservation(ctx, req, transportPath)
 	if err != nil {
-		log.Error("colibri store returned an error", "err", err)
+		log.Info("error colibri store returned an error", "err", err)
 		return nil, err
 	}
 	pbRes := translate.PBufResponse(res)
@@ -97,19 +98,19 @@ func (s *ColibriService) ConfirmSegmentIndex(ctx context.Context,
 func (s *ColibriService) ActivateSegmentIndex(ctx context.Context,
 	msg *colpb.ActivateSegmentIndexRequest) (*colpb.ActivateSegmentIndexResponse, error) {
 
-	path, err := extractPathIAFromCtx(ctx)
+	transportPath, err := colPathFromCtx(ctx)
 	if err != nil {
-		log.Error("setup segment", "err", err)
+		log.Info("error setup segment", "err", err)
 		return nil, err
 	}
 	req, err := translate.Request(msg.Base)
 	if err != nil {
-		log.Error("error unmarshalling", "err", err)
+		log.Info("error unmarshalling", "err", err)
 		return nil, err
 	}
-	res, err := s.Store.ActivateSegmentReservation(ctx, req, path)
+	res, err := s.Store.ActivateSegmentReservation(ctx, req, transportPath)
 	if err != nil {
-		log.Error("colibri store returned an error", "err", err)
+		log.Info("error colibri store returned an error", "err", err)
 		return nil, err
 	}
 	pbRes := translate.PBufResponse(res)
@@ -122,19 +123,19 @@ func (s *ColibriService) ActivateSegmentIndex(ctx context.Context,
 func (s *ColibriService) TeardownSegment(ctx context.Context, msg *colpb.TeardownSegmentRequest) (
 	*colpb.TeardownSegmentResponse, error) {
 
-	path, err := extractPathIAFromCtx(ctx)
+	transportPath, err := colPathFromCtx(ctx)
 	if err != nil {
-		log.Error("setup segment", "err", err)
+		log.Info("error setup segment", "err", err)
 		return nil, err
 	}
 	req, err := translate.Request(msg.Base)
 	if err != nil {
-		log.Error("error unmarshalling", "err", err)
+		log.Info("error unmarshalling", "err", err)
 		return nil, err
 	}
-	res, err := s.Store.TearDownSegmentReservation(ctx, req, path)
+	res, err := s.Store.TearDownSegmentReservation(ctx, req, transportPath)
 	if err != nil {
-		log.Error("colibri store returned an error", "err", err)
+		log.Info("error colibri store returned an error", "err", err)
 		return nil, err
 	}
 	pbRes := translate.PBufResponse(res)
@@ -147,19 +148,19 @@ func (s *ColibriService) TeardownSegment(ctx context.Context, msg *colpb.Teardow
 func (s *ColibriService) CleanupSegmentIndex(ctx context.Context,
 	msg *colpb.CleanupSegmentIndexRequest) (*colpb.CleanupSegmentIndexResponse, error) {
 
-	path, err := extractPathIAFromCtx(ctx)
+	transportPath, err := colPathFromCtx(ctx)
 	if err != nil {
-		log.Error("setup segment", "err", err)
+		log.Info("error setup segment", "err", err)
 		return nil, err
 	}
 	req, err := translate.Request(msg.Base)
 	if err != nil {
-		log.Error("error unmarshalling", "err", err)
+		log.Info("error unmarshalling", "err", err)
 		return nil, err
 	}
-	res, err := s.Store.CleanupSegmentReservation(ctx, req, path)
+	res, err := s.Store.CleanupSegmentReservation(ctx, req, transportPath)
 	if err != nil {
-		log.Error("colibri store returned an error", "err", err)
+		log.Info("error colibri store returned an error", "err", err)
 		return nil, err
 	}
 	pbRes := translate.PBufResponse(res)
@@ -175,7 +176,7 @@ func (s *ColibriService) ListReservations(ctx context.Context, msg *colpb.ListRe
 	dstIA := addr.IA(msg.DstIa)
 	looks, err := s.Store.ListReservations(ctx, dstIA, reservation.PathType(msg.PathType))
 	if err != nil {
-		log.Error("colibri store while listing rsvs", "err", err)
+		log.Info("error colibri store while listing rsvs", "err", err)
 		return &colpb.ListReservationsResponse{
 			ErrorMessage: err.Error(),
 		}, nil
@@ -186,20 +187,21 @@ func (s *ColibriService) ListReservations(ctx context.Context, msg *colpb.ListRe
 func (s *ColibriService) E2ESetup(ctx context.Context, msg *colpb.E2ESetupRequest) (
 	*colpb.E2ESetupResponse, error) {
 
-	path, err := extractPathIAFromCtx(ctx)
+	transportPath, err := colPathFromCtx(ctx)
 	if err != nil {
-		log.Error("setup segment", "err", err)
+		log.Info("error setup segment", "err", err)
 		return nil, err
 	}
-	msg.Params.CurrentStep++
 	req, err := translate.E2ESetupRequest(msg)
 	if err != nil {
-		log.Error("translating e2e setup", "err", err)
+		log.Info("error translating e2e setup", "err", err)
 		return nil, serrors.WrapStr("translating e2e setup", err)
 	}
-	res, err := s.Store.AdmitE2EReservation(ctx, req, path)
+
+	req.CurrentStep++ // a new hop has been traversed, take one more step
+	res, err := s.Store.AdmitE2EReservation(ctx, req, transportPath)
 	if err != nil {
-		log.Error("admitting e2e", "err", err)
+		log.Info("error admitting e2e", "err", err)
 		return nil, err
 	}
 	return translate.PBufE2ESetupResponse(res), nil
@@ -208,19 +210,19 @@ func (s *ColibriService) E2ESetup(ctx context.Context, msg *colpb.E2ESetupReques
 func (s *ColibriService) CleanupE2EIndex(ctx context.Context, msg *colpb.CleanupE2EIndexRequest) (
 	*colpb.CleanupE2EIndexResponse, error) {
 
-	path, err := extractPathIAFromCtx(ctx)
+	transportPath, err := colPathFromCtx(ctx)
 	if err != nil {
-		log.Error("setup segment", "err", err)
+		log.Info("error setup segment", "err", err)
 		return nil, err
 	}
 	req, err := translate.E2ERequest(msg.Base)
 	if err != nil {
-		log.Error("error unmarshalling", "err", err)
+		log.Info("error unmarshalling", "err", err)
 		return nil, err
 	}
-	res, err := s.Store.CleanupE2EReservation(ctx, req, path)
+	res, err := s.Store.CleanupE2EReservation(ctx, req, transportPath)
 	if err != nil {
-		log.Error("colibri store returned an error", "err", err)
+		log.Info("error colibri store returned an error", "err", err)
 		return nil, err
 	}
 	pbRes := translate.PBufResponse(res)
@@ -240,7 +242,7 @@ func (s *ColibriService) ListStitchables(ctx context.Context, msg *colpb.ListSti
 	dstIA := addr.IA(msg.DstIa)
 	stitchables, err := s.Store.ListStitchableSegments(ctx, dstIA)
 	if err != nil {
-		log.Error("colibri store while listing stitchables", "err", err)
+		log.Info("error colibri store while listing stitchables", "err", err)
 		return &colpb.ListStitchablesResponse{
 			ErrorMessage: err.Error(),
 		}, nil
@@ -282,13 +284,13 @@ func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.SetupR
 	pbReq.Base.Base.Authenticators.Macs = msg.Authenticators.Macs
 	req, err := translate.E2ESetupRequest(pbReq)
 	if err != nil {
-		log.Error("translating initial E2E setup from daemon to service", "err", err)
+		log.Info("error translating initial E2E setup from daemon to service", "err", err)
 		return nil, err
 	}
 
-	res, err := s.Store.AdmitE2EReservation(ctx, req, empty.Path{})
+	res, err := s.Store.AdmitE2EReservation(ctx, req, nil)
 	if err != nil {
-		log.Error("colibri store setting up an e2e reservation", "err", err)
+		log.Info("error colibri store setting up an e2e reservation", "err", err)
 		var trail []uint32
 		var failedStep uint32
 		if failure, ok := res.(*e2e.SetupResponseFailure); ok {
@@ -329,20 +331,20 @@ func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.SetupR
 		if err != nil {
 			return nil, serrors.WrapStr("decoding token in colibri service", err)
 		}
-		path := e2e.DeriveColibriPath(&req.ID, token)
+		colPath := e2e.DeriveColibriPath(&req.ID, token)
 		egressId := ""
-		if len(path.HopFields) > 0 {
-			egressId = fmt.Sprintf("%d", path.HopFields[0].EgressId)
+		if len(colPath.HopFields) > 0 {
+			egressId = fmt.Sprintf("%d", colPath.HopFields[0].EgressId)
 		}
-		rawPath := make([]byte, path.Len())
-		err = path.SerializeTo(rawPath)
+		transportPath := make([]byte, colPath.Len())
+		err = colPath.SerializeTo(transportPath)
 		if err != nil {
 			return nil, serrors.WrapStr("serializing a colibri path in colibri service", err)
 		}
 		// nexthop holds the interface id until the daemon resolves it with the topology
 		pbMsg.Success = &colpb.SetupReservationResponse_Success{
-			RawPath: rawPath,
-			NextHop: egressId,
+			TransportPath: transportPath,
+			NextHop:       egressId,
 		}
 	}
 	return pbMsg, nil
@@ -364,7 +366,7 @@ func (s *ColibriService) CleanupReservation(ctx context.Context,
 	}
 	req.Authenticators = msg.Base.Authenticators.Macs
 
-	res, err := s.Store.CleanupE2EReservation(ctx, req, empty.Path{})
+	res, err := s.Store.CleanupE2EReservation(ctx, req, nil)
 	if err != nil {
 		var failedStep uint32
 		if failure, ok := res.(*base.ResponseFailure); ok {
@@ -431,8 +433,9 @@ func checkLocalCaller(ctx context.Context) (*net.TCPAddr, error) {
 	return tcpaddr, nil
 }
 
-// extractPathIAFromCtx returns the forwarding path that was used to reach the service.
-func extractPathIAFromCtx(ctx context.Context) (slayerspath.Path, error) {
+// colPathFromCtx returns the colibri forwarding path that was used to reach the service or nil
+// if the transport path was not colibri.
+func colPathFromCtx(ctx context.Context) (*colpath.ColibriPathMinimal, error) {
 	gPeer, ok := peer.FromContext(ctx)
 	if !ok {
 		return nil, serrors.New("peer must exist")
@@ -449,9 +452,14 @@ func extractPathIAFromCtx(ctx context.Context) (slayerspath.Path, error) {
 		)
 	}
 
-	path, err := base.PathFromDataplanePath(peer.Path)
+	path, err := utilp.SnetToDataplanePath(peer.Path)
 	if err != nil || path == nil {
 		return nil, serrors.WrapStr("decoding path information", err)
+	}
+
+	colPath, ok := path.(*colpath.ColibriPathMinimal)
+	if !ok {
+		return nil, nil // not colibri path
 	}
 
 	// The path extracted from the remote address is actually the replyPath (i.e.,
@@ -460,29 +468,9 @@ func extractPathIAFromCtx(ctx context.Context) (slayerspath.Path, error) {
 	// However, here we want to extract the forwarding path. We reverse the
 	// path again to recover forwarding direction path;
 	// e.g. AS_0 -> ... -> AS_i -> AS_Local -> ... -> AS_{n_1}
-	fwdPath, err := copyFrom(path).Reverse()
+	colPath, err = colPath.Clone().ReverseAsColibri()
 	if err != nil {
 		return nil, serrors.WrapStr("reversing path", err)
 	}
-
-	return fwdPath, nil
-}
-
-func copyFrom(p slayerspath.Path) slayerspath.Path {
-	var rp slayerspath.Path
-	if p != nil {
-		var err error
-		buff := make([]byte, p.Len())
-		if err = p.SerializeTo(buff); err != nil {
-			panic(fmt.Sprintf("cannot copy path, SerializeTo failed: %s", err))
-		}
-		rp, err = slayerspath.NewPath(p.Type())
-		if err != nil {
-			panic(err)
-		}
-		if err = rp.DecodeFromBytes(buff); err != nil {
-			panic(fmt.Sprintf("cannot copy path, DecodeFromBytes failed: %s", err))
-		}
-	}
-	return rp
+	return colPath, nil
 }

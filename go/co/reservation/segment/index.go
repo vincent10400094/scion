@@ -36,7 +36,7 @@ const (
 type Index struct {
 	Idx        reservation.IndexNumber
 	Expiration time.Time
-	state      IndexState
+	State      IndexState
 	MinBW      reservation.BWCls
 	MaxBW      reservation.BWCls
 	AllocBW    reservation.BWCls
@@ -49,17 +49,12 @@ func NewIndex(idx reservation.IndexNumber, expiration time.Time, state IndexStat
 	return &Index{
 		Idx:        idx,
 		Expiration: expiration,
-		state:      state,
+		State:      state,
 		MinBW:      minBW,
 		MaxBW:      maxBW,
 		AllocBW:    allocBW,
 		Token:      token,
 	}
-}
-
-// State returns the read-only state.
-func (index *Index) State() IndexState {
-	return index.state
 }
 
 // Indices is a collection of Index that implements IndicesInterface.
@@ -82,6 +77,32 @@ func (idxs Indices) String() string {
 		strs[i] = fmt.Sprintf("%d:%s", index.Idx, index.Expiration)
 	}
 	return strings.Join(strs, ",")
+}
+
+func (idxs Indices) OldestExp() time.Time {
+	if len(idxs) <= 0 {
+		return time.Time{}
+	}
+	exp := idxs[0].Expiration
+	for i := 1; i < len(idxs); i++ {
+		if idxs[i].Expiration.Before(exp) {
+			exp = idxs[i].Expiration
+		}
+	}
+	return exp
+}
+
+func (idxs Indices) NewestExp() time.Time {
+	if len(idxs) <= 0 {
+		return time.Time{}
+	}
+	exp := idxs[0].Expiration
+	for i := 1; i < len(idxs); i++ {
+		if idxs[i].Expiration.After(exp) {
+			exp = idxs[i].Expiration
+		}
+	}
+	return exp
 }
 
 // IndexFilter returns true if the index is to be kept.
@@ -130,7 +151,14 @@ func ByMaxBW(maxBW reservation.BWCls) IndexFilter {
 // NotConfirmed filters out indices that are not in a state active or pending.
 func NotConfirmed() IndexFilter {
 	return func(index Index) bool {
-		return index.state == IndexActive || index.state == IndexPending
+		return index.State == IndexActive || index.State == IndexPending
+	}
+}
+
+// NotActive filters out indices that are not active (keeps only active indices).
+func NotActive() IndexFilter {
+	return func(index Index) bool {
+		return index.State == IndexActive
 	}
 }
 

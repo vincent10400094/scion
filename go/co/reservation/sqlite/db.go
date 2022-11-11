@@ -121,7 +121,7 @@ func (x *executor) GetSegmentRsvFromID(ctx context.Context, ID *reservation.ID) 
 
 // GetSegmentRsvsFromSrcDstIA returns all reservations that start at src AS and end in dst AS.
 // Both srcIA and dstIA can use wildcards: 1-0, 0-ff00:1:1, or 0-0 are valid.
-// The path type argument is ignored if it equals UnknownPath, or used to match against otherwise.
+// The path type is optional: if not UnknownPath, it will match against it.
 func (x *executor) GetSegmentRsvsFromSrcDstIA(ctx context.Context, srcIA, dstIA addr.IA,
 	pathType reservation.PathType) ([]*segment.Reservation, error) {
 
@@ -264,8 +264,8 @@ func (x *executor) DeleteExpiredIndices(ctx context.Context, now time.Time) (int
 				prev := previous[seg.ID.String()]
 				if curr != prev {
 					diff := int64(prev - curr)
-					ingressIFs[seg.Ingress] += diff
-					egressIFs[seg.Egress] += diff
+					ingressIFs[seg.Ingress()] += diff
+					egressIFs[seg.Egress()] += diff
 				}
 			}
 			for ifid, diff := range ingressIFs {
@@ -662,21 +662,21 @@ func upsertNewSegReservation(ctx context.Context, x db.Sqler, rsv *segment.Reser
 		return err
 	}
 	rawSteps := rsv.Steps.ToRaw()
-	rawPath, err := base.PathToRaw(rsv.RawPath)
+	transportPath, err := base.ColPathToRaw(rsv.TransportPath)
 	if err != nil {
 		return err
 	}
 	const query = `INSERT INTO seg_reservation (id_as, id_suffix,
-		ingress, egress, path_type, steps, current_step, rawPath, end_props,
+		ingress, egress, path_type, steps, current_step, transportPath, end_props,
 		traffic_split, src_ia, dst_ia, active_index)
 		VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
 		ON CONFLICT(id_as,id_suffix) DO UPDATE
-		SET ingress = ?, egress = ?, path_type = ?, steps = ?, current_step = ?, rawPath = ?,
+		SET ingress = ?, egress = ?, path_type = ?, steps = ?, current_step = ?, transportPath = ?,
 		end_props = ?, traffic_split = ?, src_ia = ?, dst_ia = ?, active_index = ?`
 	_, err = x.ExecContext(
-		ctx, query, rsv.ID.ASID, binary.BigEndian.Uint32(rsv.ID.Suffix), rsv.Ingress, rsv.Egress,
-		rsv.PathType, rawSteps, rsv.CurrentStep, rawPath, rsv.PathEndProps, rsv.TrafficSplit, rsv.Steps.SrcIA(),
-		rsv.Steps.DstIA(), activeIndex, rsv.Ingress, rsv.Egress, rsv.PathType, rawSteps, rsv.CurrentStep, rawPath,
+		ctx, query, rsv.ID.ASID, binary.BigEndian.Uint32(rsv.ID.Suffix), rsv.Ingress(), rsv.Egress(),
+		rsv.PathType, rawSteps, rsv.CurrentStep, transportPath, rsv.PathEndProps, rsv.TrafficSplit, rsv.Steps.SrcIA(),
+		rsv.Steps.DstIA(), activeIndex, rsv.Ingress(), rsv.Egress(), rsv.PathType, rawSteps, rsv.CurrentStep, transportPath,
 		rsv.PathEndProps, rsv.TrafficSplit, rsv.Steps.SrcIA(), rsv.Steps.DstIA(), activeIndex)
 	if err != nil {
 		return err
@@ -702,7 +702,7 @@ func upsertNewSegReservation(ctx context.Context, x db.Sqler, rsv *segment.Reser
 		params := make([]interface{}, 0, 8*len(rsv.Indices))
 		for _, index := range rsv.Indices {
 			params = append(params, rsvRowID, index.Idx,
-				util.TimeToSecs(index.Expiration), index.State(), index.MinBW, index.MaxBW,
+				util.TimeToSecs(index.Expiration), index.State, index.MinBW, index.MaxBW,
 				index.AllocBW, index.Token.ToRaw())
 			if _, err := reservation.TokenFromRaw(index.Token.ToRaw()); err != nil {
 				log.Error("inconsistent token being saved", "err", err, "id", rsv.ID.String(),
@@ -717,7 +717,7 @@ func upsertNewSegReservation(ctx context.Context, x db.Sqler, rsv *segment.Reser
 
 		// update interface state
 		blocked := int64(rsv.MaxBlockedBW())
-		return interfacesStateUsedBWUpdate(ctx, x, rsv.Ingress, rsv.Egress, blocked)
+		return interfacesStateUsedBWUpdate(ctx, x, rsv.Ingress(), rsv.Egress(), blocked)
 	}
 	return nil
 }
@@ -731,7 +731,7 @@ type rsvFields struct {
 	PathType     int
 	Steps        []byte
 	CurrentStep  int
-	RawPath      []byte
+	TrasportPath []byte
 	EndProps     int
 	TrafficSplit int
 	ActiveIndex  int
@@ -741,7 +741,7 @@ func getSegReservations(ctx context.Context, x db.Sqler, condition string, param
 	[]*segment.Reservation, error) {
 
 	const queryTmpl = `SELECT ROWID,id_as,id_suffix,ingress,egress,path_type,steps,current_step,
-		rawPath,end_props,traffic_split,active_index FROM seg_reservation %s`
+		transportPath,end_props,traffic_split,active_index FROM seg_reservation %s`
 	query := fmt.Sprintf(queryTmpl, condition)
 
 	rows, err := x.QueryContext(ctx, query, params...)
@@ -754,7 +754,7 @@ func getSegReservations(ctx context.Context, x db.Sqler, condition string, param
 	for rows.Next() {
 		var f rsvFields
 		err := rows.Scan(&f.RowID, &f.AsID, &f.Suffix, &f.Ingress, &f.Egress, &f.PathType, &f.Steps, &f.CurrentStep,
-			&f.RawPath, &f.EndProps, &f.TrafficSplit, &f.ActiveIndex)
+			&f.TrasportPath, &f.EndProps, &f.TrafficSplit, &f.ActiveIndex)
 		if err != nil {
 			return nil, err
 		}
@@ -786,18 +786,22 @@ func buildSegRsvFromFields(ctx context.Context, x db.Sqler, fields *rsvFields) (
 	rsv := segment.NewReservation(addr.AS(fields.AsID))
 	rsv.ID.Suffix = make([]byte, reservation.IDSuffixSegLen)
 	binary.BigEndian.PutUint32(rsv.ID.Suffix, fields.Suffix)
-	rsv.Ingress = fields.Ingress
-	rsv.Egress = fields.Egress
 	rsv.PathType = reservation.PathType(fields.PathType)
 
 	steps := base.PathStepsFromRaw(fields.Steps)
-	rawPath, err := base.PathFromRaw(fields.RawPath)
+	transportPath, err := base.ColPathFromRaw(fields.TrasportPath)
 	if err != nil {
 		return nil, err
 	}
 	rsv.Steps = steps
 	rsv.CurrentStep = fields.CurrentStep
-	rsv.RawPath = rawPath
+	// sanity check
+	if rsv.Ingress() != fields.Ingress || rsv.Egress() != fields.Egress {
+		return nil, serrors.New("error in db: steps do not correspond to ingress/egress",
+			"curr_step", rsv.CurrentStep, "steps", rsv.Steps.String(),
+			"ingress", fields.Ingress, "egress", fields.Egress)
+	}
+	rsv.TransportPath = transportPath
 	rsv.PathEndProps = reservation.PathEndProps(fields.EndProps)
 	rsv.TrafficSplit = reservation.SplitCls(fields.TrafficSplit)
 	rsv.Indices = indices
@@ -859,11 +863,11 @@ func deleteStateForRsv(ctx context.Context, x db.Sqler, rsvID *reservation.ID) e
 	case 0:
 	case 1:
 		blocked := -int64(rsvs[0].MaxBlockedBW()) // more free bandwidth
-		err := interfacesStateUsedBWUpdate(ctx, x, rsvs[0].Ingress, rsvs[0].Egress, blocked)
+		err := interfacesStateUsedBWUpdate(ctx, x, rsvs[0].Ingress(), rsvs[0].Egress(), blocked)
 		if err != nil {
 			return err
 		}
-		// err = subtractTransitDem(ctx, x, rsvs[0].Ingress, rsvs[0].Egress, uint64(blocked))
+		// err = subtractTransitDem(ctx, x, rsvs[0].Ingress(), rsvs[0].Egress(), uint64(blocked))
 		// if err != nil {
 		// 	return err
 		// }
@@ -1127,8 +1131,47 @@ func getExpiredSegIndexRowIDs(ctx context.Context, x db.Sqler, now time.Time) (
 func deleteSegIndicesFromRowIDs(ctx context.Context, x db.Sqler, rowIDs []interface{}) (
 	int, error) {
 
-	const queryTmpl = `DELETE FROM seg_index WHERE ROWID IN (?%s)`
-	query := fmt.Sprintf(queryTmpl, strings.Repeat(",?", len(rowIDs)-1))
+	// check if any index is active, and change the reservation to no active index in that case
+	query := `SELECT DISTINCT reservation FROM seg_index WHERE state = ? AND ROWID IN (?%s)`
+	query = fmt.Sprintf(query, strings.Repeat(",?", len(rowIDs)-1))
+	params := []interface{}{segment.IndexActive}
+	rows, err := x.QueryContext(ctx, query, append(params, rowIDs...)...)
+	if err != nil {
+		return 0, err
+	}
+
+	rsvRowIds := make([]int, 0)
+	for rows.Next() {
+		var rsvRowId int
+		if err := rows.Scan(&rsvRowId); err != nil {
+			return 0, err
+		}
+		rsvRowIds = append(rsvRowIds, rsvRowId)
+	}
+	if len(rsvRowIds) > 0 {
+		// need to update the active index
+		query = `UPDATE seg_reservation SET active_index=-1 WHERE ROWID IN(?%s)`
+		query = fmt.Sprintf(query, strings.Repeat(",?", len(rsvRowIds)-1))
+		params := make([]interface{}, len(rsvRowIds))
+		for i, id := range rsvRowIds {
+			params[i] = id
+		}
+		res, err := x.ExecContext(ctx, query, params...)
+		if err != nil {
+			return 0, err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		if int(n) != len(rsvRowIds) {
+			return 0, serrors.New(fmt.Sprintf("error updating active_index after deleting index; "+
+				"updated %d reservations but wanted %d", n, len(rsvRowIds)))
+		}
+	}
+
+	query = `DELETE FROM seg_index WHERE ROWID IN (?%s)`
+	query = fmt.Sprintf(query, strings.Repeat(",?", len(rowIDs)-1))
 	res, err := x.ExecContext(ctx, query, rowIDs...)
 	if err != nil {
 		return 0, err
@@ -1237,7 +1280,6 @@ func interfacesStateUsedBWUpdate(ctx context.Context, x db.Sqler, ingress, egres
 }
 
 func getTransitDem(ctx context.Context, x db.Sqler, ingress, egress uint16) (uint64, error) {
-
 	query := `SELECT traffic_demand from state_transit_demand
 	WHERE ingress = ? AND egress = ?`
 	var transit uint64

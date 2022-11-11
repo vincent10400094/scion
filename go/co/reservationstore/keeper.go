@@ -17,37 +17,20 @@ package reservationstore
 import (
 	"context"
 	"fmt"
-	"math/rand"
-	"strings"
 	"sync"
 	"time"
 
 	base "github.com/scionproto/scion/go/co/reservation"
 	"github.com/scionproto/scion/go/co/reservation/conf"
 	"github.com/scionproto/scion/go/co/reservation/segment"
-	seg "github.com/scionproto/scion/go/co/reservation/segment"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/pathpol"
 	"github.com/scionproto/scion/go/lib/serrors"
-	slayerspath "github.com/scionproto/scion/go/lib/slayers/path"
+	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/snet"
 )
-
-// This file defines the entries that the keeper looks after.
-// Per entry, the keeper will setup new reservations:
-// - look for compatible reservations in our store; these will be renewed. If not enough, go on.
-// - using all the compatible paths to destination:
-// 	 - emit as many requests as needed to fill minActiveRsvs.
-//   - wait for success or keep on emitting requests, until he have enough successful minActiveRsvs.
-//
-// Per entry, the keeper will renew all the associated reservations.
-// - renew each reservation
-// - if failure, remove it from the active reservations association.
-// - the next pass of the keeper will check if we have enough active reservations.
-//
-// The keeper always knows the nearest point in time when a reservation will expire.
 
 // sleepAtLeast is the time duration that the keeper will sleep at a minimum, even
 // if it's called very frequently.
@@ -66,284 +49,296 @@ const minDuration = 2 * sleepAtMost
 // This value would typically be equal to twice minDuration.
 const newIndexMinDuration = 2 * minDuration
 
-type keeper struct {
-	sleepUntil time.Time // nothing to do in the keeper until this time
-	manager    Manager
-	entries    map[addr.IA][]requirements
+// ServiceFacilitator defines a minimal interface that has to be implemented to be
+// usable by the keeper.
+type ServiceFacilitator interface {
+	PathsTo(ctx context.Context, dst addr.IA) ([]snet.Path, error)
+	SetupRequest(ctx context.Context, req *segment.SetupReq) error
+	ActivateRequest(
+		context.Context,
+		*base.Request,
+		base.PathSteps,
+		*colpath.ColibriPathMinimal,
+		bool,
+	) error
+	GetReservationsAtSource(ctx context.Context) ([]*segment.Reservation, error)
+	DeleteExpiredIndices(ctx context.Context) error
 }
 
-func NewKeeper(manager Manager, conf *conf.Reservations) (
-	*keeper, error) {
+// keeper looks after the reservations configured in reservations.json
+// It starts by cleaning up those reservations that have expired.
+// The keeper tries to match existing reservations with configured entries.
+// If no match is found, a new reservation will be created.
+type keeper struct {
+	now        func() time.Time
+	localIA    addr.IA
+	sleepUntil time.Time // nothing to do in the keeper until this time
+	provider   ServiceFacilitator
+	entries    []*entry
+}
 
-	entries, err := parseInitial(conf)
-	rsvsCount := 0
-	for _, r := range entries {
-		rsvsCount += len(r)
+type entry struct {
+	conf *configuration
+	rsv  *segment.Reservation
+}
+
+// PrepareSetupRequest creates a valid setup request with the steps always in the direction of
+// the traffic of the SegR, and the transport path always in the direction of the next
+// colibri service (thus for down-path SegRs the transport will be in the reverse wrt the steps).
+func (e *entry) PrepareSetupRequest(now, expTime time.Time, localAS addr.AS,
+	p snet.Path) *segment.SetupReq {
+
+	steps, err := base.StepsFromSnet(p)
+	if err != nil {
+		log.Info("error in SCION path, cannot convert to steps", "err", err, "path", p)
+		panic(err)
 	}
-	log.Debug("colibri keeper", "destinations", len(entries), "rsvs", rsvsCount)
+	currentStep := 0
+
+	// if the SegR is of down-path type, reverse the steps
+	if e.conf.pathType == reservation.DownPath {
+		steps = steps.Reverse()
+		currentStep = len(steps) - 1
+	}
+
+	id, _ := reservation.NewID(localAS, make([]byte, reservation.IDSuffixSegLen))
+	return &segment.SetupReq{
+		Request:        *base.NewRequest(now, id, 0, len(steps)),
+		ExpirationTime: expTime,
+		PathType:       e.conf.pathType,
+		MinBW:          e.conf.minBW,
+		MaxBW:          e.conf.maxBW,
+		SplitCls:       e.conf.splitCls,
+		PathProps:      e.conf.endProps,
+		AllocTrail:     reservation.AllocationBeads{},
+		Steps:          steps,
+		CurrentStep:    currentStep,
+		TransportPath:  nil, // new setups are not transported in colibri paths
+	}
+}
+
+func (e *entry) PrepareRenewalRequest(now, expTime time.Time) *segment.SetupReq {
+	return &segment.SetupReq{
+		Request: *base.NewRequest(
+			now, &e.rsv.ID, e.rsv.NextIndexToRenew(), len(e.rsv.Steps)),
+		ExpirationTime: expTime,
+		PathType:       e.conf.pathType,
+		MinBW:          e.conf.minBW,
+		MaxBW:          e.conf.maxBW,
+		SplitCls:       e.rsv.TrafficSplit,
+		PathProps:      e.rsv.PathEndProps,
+		AllocTrail:     reservation.AllocationBeads{},
+		Steps:          e.rsv.Steps.Copy(),
+		CurrentStep:    0,
+		TransportPath:  e.rsv.TransportPath,
+		Reservation:    e.rsv,
+	}
+}
+
+func NewKeeper(
+	ctx context.Context,
+	provider ServiceFacilitator,
+	conf *conf.Reservations,
+	localIA addr.IA,
+) (*keeper, error) {
+
+	// load configuration
+	reqs, err := parseInitial(conf)
 	if err != nil {
 		return nil, err
 	}
+	// cleanup expired indices before reading reservations
+	if err := provider.DeleteExpiredIndices(ctx); err != nil {
+		return nil, err
+	}
+	// get existing reservations
+	rsvs, err := provider.GetReservationsAtSource(ctx)
+	if err != nil {
+		return nil, err
+	}
+	entries := matchRsvsWithConfiguration(rsvs, reqs)
+
+	log.Debug("colibri keeper", "reservations", len(entries))
 	return &keeper{
+		now:        time.Now,
+		localIA:    localIA,
 		sleepUntil: time.Now().Add(-time.Nanosecond),
-		manager:    manager,
+		provider:   provider,
 		entries:    entries,
 	}, nil
 }
 
-// OneShot returns the time when it expects to be called again. Before this time it has
-// nothing to do.
+// OneShot keeps all reservations healthy. Those that need renewal are renewed, those
+// that still have no reservation ID for its config will request a new one.
+// The function returns the time when it should be called next.
 func (k *keeper) OneShot(ctx context.Context) (time.Time, error) {
 	wg := sync.WaitGroup{}
+	times := make([]time.Time, len(k.entries))
+	errs := make(serrors.List, len(k.entries))
 	wg.Add(len(k.entries))
-	wakeupTimes := make(chan time.Time, len(k.entries))
-	for dst, entries := range k.entries {
-		dst, entries := dst, entries
-		go func(c chan time.Time) {
+	for i, e := range k.entries {
+		i, e := i, e
+		go func() {
 			defer log.HandlePanic()
 			defer wg.Done()
-			scionPaths, err := k.manager.PathsTo(ctx, dst)
-			if err != nil {
-				log.Error("keeping the reservations, querying paths", "err", err)
-			}
-			wakeup, err := k.keepDestination(ctx, dst, entries, scionPaths)
-			if err != nil {
-				log.Error("keeping the reservations", "err", err)
-			}
-			c <- wakeup
-		}(wakeupTimes)
+			times[i], errs[i] = k.keepReservation(ctx, e)
+		}()
 	}
 	wg.Wait()
-	close(wakeupTimes)
-	earliest := k.manager.Now().Add(sleepAtMost)
-	for wakeup := range wakeupTimes {
-		if wakeup.Before(earliest) {
-			earliest = wakeup
+	if err := errs.Coalesce(); err != nil {
+		return k.now().Add(sleepAtLeast), err
+	}
+	// wakeupAtLatest is the maximum to wake up the keeper
+	wakeupAtLatest := k.now().Add(sleepAtMost)
+	for _, t := range times {
+		if t.Before(wakeupAtLatest) {
+			wakeupAtLatest = t
 		}
 	}
-	if earliest.Sub(k.manager.Now()) < sleepAtLeast {
-		earliest = k.manager.Now().Add(sleepAtLeast)
+	// but the keeper must sleep at least a minimum amount of time
+	if wakeupAtLatest.Sub(k.now()) < sleepAtLeast {
+		wakeupAtLatest = k.now().Add(sleepAtLeast)
 	}
-	return earliest, nil
+	return wakeupAtLatest, nil
 }
 
-// keepDestination will ensure that all reservations for dstIA exist and are compliant.
-// It returns the time until there is nothing to do for these reservations.
-func (k *keeper) keepDestination(ctx context.Context, dstIA addr.IA, entries []requirements,
-	paths []snet.Path) (time.Time, error) {
+// keepReservation will ensure that the reservation exists or a request is created.
+func (k *keeper) keepReservation(ctx context.Context, e *entry) (time.Time, error) {
+	now := k.now()
+	var err error
+	if e.rsv == nil {
+		e.rsv, err = k.askNewReservation(ctx, e)
+		if err != nil {
+			return time.Time{}, err
+		}
+	}
 
-	// get reservations once and pass them along.
-	rsvs, err := k.manager.GetReservationsAtSource(ctx, dstIA)
+	switch compliance(e, k.now().Add(minDuration)) {
+	case Compliant:
+	case NeedsIndices:
+		err = k.askNewIndices(ctx, e)
+	case NeedsActivation:
+		err = k.activateIndex(ctx, e)
+	}
+
 	if err != nil {
 		return time.Time{}, err
 	}
-	// setup new reservations
-	sleepUntil, err := k.setupsPerDestination(ctx, dstIA, entries, paths, rsvs)
+	return now.Add(newIndexMinDuration), nil
+}
+
+// matchRsvsWithConfiguration matches existing reservations with configuration.
+// It returns the appropriate entries to manage from the keeper.
+// Those entries without a reservation ID must obtain a new reservation;
+// those with a reservation ID will need index activation, etc.
+func matchRsvsWithConfiguration(rsvs []*segment.Reservation, conf []*configuration) []*entry {
+	conf = append(conf[:0:0], conf...)
+	// greedy strategy: for each reservation try to match it with the first compatible configuration
+	entries := make([]*entry, 0)
+	for _, r := range rsvs {
+		i := findCompatibleConfiguration(r, conf)
+		if i < 0 {
+			continue
+		}
+		entries = append(entries, &entry{
+			conf: conf[i],
+			rsv:  r,
+		})
+		// one conf. is matched against this r; remove that entry from the pool
+		conf = append(conf[:i], conf[i+1:]...)
+	}
+	for _, c := range conf {
+		entries = append(entries, &entry{
+			conf: c,
+		})
+	}
+	return entries
+}
+
+// findCompatibleConfiguration finds the first compatible configuration with the reservation.
+// It returns the index of the configuration in the slice, or -1 if no valid one is found.
+func findCompatibleConfiguration(r *segment.Reservation, conf []*configuration) int {
+	for i, c := range conf {
+		switch {
+		case r.Steps.DstIA() != c.dst:
+			continue
+		case r.PathType != c.pathType:
+			continue
+		case r.TrafficSplit != c.splitCls:
+			continue
+		case r.PathEndProps != c.endProps:
+			continue
+		case !c.predicate.EvalInterfaces(r.Steps.Interfaces()):
+			continue
+		}
+		return i
+	}
+	return -1
+}
+
+func (k *keeper) activateIndex(ctx context.Context, e *entry) error {
+	req := base.NewRequest(k.now(), &e.rsv.ID, e.rsv.NextIndexToActivate().Idx,
+		len(e.rsv.Steps))
+	inReverse := e.rsv.PathType == reservation.DownPath
+	err := k.provider.ActivateRequest(ctx, req, e.rsv.Steps.Copy(), e.rsv.TransportPath, inReverse)
+	if err == nil {
+		err = e.rsv.SetIndexActive(req.Index)
+	}
+	return err
+}
+
+// askNewIndices requests a renewal
+func (k *keeper) askNewIndices(ctx context.Context, e *entry) error {
+	now := k.now()
+	req := e.PrepareRenewalRequest(now, now.Add(newIndexMinDuration))
+	return k.provider.SetupRequest(ctx, req)
+}
+
+func (k *keeper) askNewReservation(ctx context.Context, e *entry) (*segment.Reservation, error) {
+	now := k.now()
+	paths, err := k.provider.PathsTo(ctx, e.conf.dst)
 	if err != nil {
-		return sleepUntil, serrors.WrapStr("keeping destination", err, "dst", dstIA)
+		return nil, err
 	}
-	return sleepUntil, nil
-}
-
-// setupsPerDestination processes all entries for a given IA sequentially, to avoid
-// reservation racing. It creates the setup requests and later sends them.
-// Returns the time until which there is nothing to do for these reservations.
-func (k *keeper) setupsPerDestination(ctx context.Context, dstIA addr.IA, entries []requirements,
-	paths []snet.Path, currentRsvs []*seg.Reservation) (time.Time, error) {
-
-	now := k.manager.Now()
-	wakeupTime := now.Add(sleepAtMost)
-	errors := make(serrors.List, 0)
-	for i, entry := range entries {
-		// filter reservations
-		atLeastUntil := k.manager.Now().Add(minDuration)
-		compliantRsvs, needActivation, needIndices, notCompliant :=
-			entry.SplitByCompliance(currentRsvs, atLeastUntil)
-
-		log.Debug("colibri keeper, reservations by compliance", "ia", dstIA.String(),
-			"i/total", fmt.Sprintf("%d/%d", i+1, len(entries)),
-			"compliant", printRsvs(compliantRsvs), "need_activation", printRsvs(needActivation),
-			"need_indices", printRsvs(needIndices), "never", printRsvs(notCompliant))
-
-		// activation:
-		if err := k.activateIndices(ctx, needActivation); err != nil {
-			errors = append(errors, err)
-			continue
-		}
-		expirationNewIndices := now.Add(newIndexMinDuration)
-		// new indices:
-		err := k.askNewIndices(ctx, needIndices, dstIA, entry, expirationNewIndices)
-		if err != nil {
-			errors = append(errors, err)
-			continue
-		}
-
-		// totally new reservations:
-		requestCount := entry.minActiveRsvs -
-			len(compliantRsvs) - len(needActivation) - len(needIndices)
-		if requestCount < 0 {
-			requestCount = 0
-		}
-		_, err = k.askNewReservations(ctx, requestCount,
-			dstIA, entry, paths, expirationNewIndices)
-		if err != nil {
-			errors = append(errors, err)
-			continue
-		}
-
-		// the needIndices and new reservations are good for newIndexMinDuration
-		if expirationNewIndices.Before(wakeupTime) && (len(needIndices) > 0 || requestCount > 0) {
-			wakeupTime = expirationNewIndices
-		}
-		// we don't know yet when reservations from compliantRsvs or needActivation expire
-		for _, rsv := range append(compliantRsvs, needActivation...) {
-			if rsv.ActiveIndex().Expiration.Before(wakeupTime) {
-				wakeupTime = rsv.ActiveIndex().Expiration
+	// try with each possible path
+	paths = e.conf.predicate.Eval(paths)
+	for _, p := range paths {
+		req := e.PrepareSetupRequest(now, now.Add(newIndexMinDuration), k.localIA.AS(), p)
+		err := k.provider.SetupRequest(ctx, req)
+		if err == nil {
+			if req.Reservation == nil {
+				panic("logic error, reservation after new request is empty")
 			}
 		}
+		if req.Reservation != nil {
+			return req.Reservation, err
+		}
+		log.Info("error creating new reservation from best effort path", "path", p, "err", err)
 	}
-	if len(errors) > 0 {
-		return time.Time{}, errors.ToError()
-	}
-	return wakeupTime, nil
+	return nil, serrors.New("no more best effort paths to create reservation", "dst", e.conf.dst)
 }
 
-// activateIndices expects reservations that have a confirmed index that can be activated.
-func (k *keeper) activateIndices(ctx context.Context, rsvs []*segment.Reservation) error {
-	reqs := make([]*base.Request, len(rsvs))
-	stepsCollection := make([]base.PathSteps, len(rsvs))
-	paths := make([]slayerspath.Path, len(rsvs))
-	for i, rsv := range rsvs {
-		index := rsv.NextIndexToActivate()
-		if index == nil {
-			return serrors.New("request to activate, but no index suitable", "id", rsv.ID,
-				"indices", rsv.Indices.String())
-		}
-		reqs[i] = base.NewRequest(k.manager.Now(), &rsv.ID, index.Idx, len(rsv.Steps.Copy()))
-		stepsCollection[i] = rsv.Steps.Copy()
-		paths[i] = rsv.RawPath
-	}
-	errs := filterEmptyErrors(k.manager.ActivateManyRequest(ctx, reqs, stepsCollection, paths))
-	if len(errs) > 0 {
-		log.Info("errors while activating rsvs", "errs", errs)
-		return serrors.New("errors in activation")
-	}
-	return nil
-}
-
-// askNewIndices will prepare requests based on existing reservations and ask for new indices.
-func (k *keeper) askNewIndices(ctx context.Context, rsvs []*seg.Reservation, dstIA addr.IA,
-	entry requirements, atLeastUntil time.Time) error {
-
-	// TODO(juagargi) test this function (the indices as seen in requests should be active+1)
-	if len(rsvs) > 0 {
-		requests, err := entry.PrepareRenewalRequests(rsvs, k.manager.Now(), atLeastUntil)
-		if err != nil {
-			return serrors.WrapStr("cannot request new indices", err)
-		}
-		// this will block until successfully finished
-		return k.requestNSuccessfulRsvs(ctx, dstIA, entry, requests, len(rsvs))
-	}
-	return nil
-}
-
-// askNewReservations creates new requests based on the paths and the entry and ensures
-// that at least `requiredSuccesful` are successful.
-func (k *keeper) askNewReservations(ctx context.Context, requiredSuccesful int, dstIA addr.IA,
-	entry requirements, paths []snet.Path, expTime time.Time) ([]*segment.Reservation, error) {
-
-	// TODO(juagargi) test this function (indices seen in requests should always be zero)
-	if requiredSuccesful > 0 {
-		requests, err := entry.PrepareSetupRequests(paths, k.manager.LocalIA().AS(),
-			k.manager.Now(), expTime)
-		if err != nil {
-			return nil, serrors.WrapStr("cannot setup new reservations", err, "paths", paths)
-		}
-
-		// this will block until successfully finished
-		err = k.requestNSuccessfulRsvs(ctx, dstIA, entry, requests, requiredSuccesful)
-		if err != nil {
-			return nil, err
-		}
-		rsvs := make([]*segment.Reservation, 0)
-		for _, req := range requests {
-			if req.Reservation != nil {
-				rsvs = append(rsvs, req.Reservation)
-			}
-		}
-		return rsvs, nil
-	}
-	return nil, nil
-}
-
-// requestNSuccessfulRsvs uses the manager to request reservations in parallel, until
-// the pending count is reached, or there are no more available requests.
-func (k *keeper) requestNSuccessfulRsvs(ctx context.Context, dstIA addr.IA, entry requirements,
-	requests []*seg.SetupReq, pendingCount int) error {
-
-	needActivation := make([]*base.Request, 0)
-	needActivationSteps := make([]base.PathSteps, 0)
-	needActivationPaths := make([]slayerspath.Path, 0)
-	var setups []*seg.SetupReq
-	for pendingCount > 0 && len(requests) > 0 {
-		indices := entry.SelectRequests(requests, pendingCount)
-		setups, requests = splitRequests(requests, indices)
-		errs := k.manager.SetupManyRequest(ctx, setups)
-		for i, req := range setups {
-			if errs[i] == nil {
-				needActivation = append(needActivation, base.NewRequest(k.manager.Now(), &req.ID,
-					req.Index, len(req.Steps)))
-				needActivationSteps = append(needActivationSteps, req.Steps)
-				needActivationPaths = append(needActivationPaths, req.RawPath)
-			}
-		}
-		errs = filterEmptyErrors(errs)
-		if len(errs) > 0 {
-			log.Info("errors while requesting reservations", "errs", errs)
-		}
-		pendingCount = pendingCount - len(setups) + len(errs)
-	}
-	if pendingCount > 0 {
-		return serrors.New("could not request the minimum required of reservations",
-			"dst", dstIA, "requests_len", len(requests))
-	}
-	errs := filterEmptyErrors(k.manager.ActivateManyRequest(
-		ctx,
-		needActivation,
-		needActivationSteps,
-		needActivationPaths,
-	))
-	if len(errs) > 0 {
-		log.Info("errors while activating reservations", "errs", errs)
-		return serrors.New("could not activate all reservations", "err_count", len(errs))
-	}
-	return nil
-}
-
-// requirements is a 1 to 1 association to a conf.ReservationEntry
-type requirements struct {
-	pathType      reservation.PathType
-	predicate     *pathpol.Sequence
-	minBW         reservation.BWCls
-	maxBW         reservation.BWCls
-	splitCls      reservation.SplitCls
-	endProps      reservation.PathEndProps
-	minActiveRsvs int
+// configuration is a 1 to 1 association to a conf.ReservationEntry
+type configuration struct {
+	dst       addr.IA
+	pathType  reservation.PathType
+	predicate *pathpol.Sequence
+	minBW     reservation.BWCls
+	maxBW     reservation.BWCls
+	splitCls  reservation.SplitCls
+	endProps  reservation.PathEndProps
 }
 
 type Compliance int
 
 const (
-	NeverCompliant  = Compliance(iota) // reservation values always out of compliance
-	NeedsIndices                       // ask for a new index
+	NeedsIndices    = Compliance(iota) // ask for a new index
 	NeedsActivation                    // ask to activate index
 	Compliant                          // already has an active compliant index
 )
 
 func (c Compliance) String() string {
 	switch c {
-	case NeverCompliant:
-		return "NeverCompliant"
 	case NeedsIndices:
 		return "NeedsIndices"
 	case NeedsActivation:
@@ -355,205 +350,55 @@ func (c Compliance) String() string {
 	}
 }
 
-// SplitByCompliance will split the reservations into three groups:
-// compliant, needsActivation, needsIndices and not compliant, according to the requirements
-// of this entry. For an explanation of compliance, see the type `Compliance`.
-func (e *requirements) SplitByCompliance(rsvs []*seg.Reservation, atLeastUntil time.Time) (
-	[]*seg.Reservation, []*seg.Reservation, []*seg.Reservation, []*seg.Reservation) {
-
-	compliant := make([]*seg.Reservation, 0)
-	needIndices := make([]*seg.Reservation, 0)
-	needActivation := make([]*seg.Reservation, 0)
-	neverCompliant := make([]*seg.Reservation, 0)
-	for _, rsv := range rsvs {
-		compliance := e.Compliance(rsv, atLeastUntil)
-		switch compliance {
-		case Compliant:
-			compliant = append(compliant, rsv)
-		case NeedsActivation:
-			needActivation = append(needActivation, rsv)
-		case NeedsIndices:
-			needIndices = append(needIndices, rsv)
-		case NeverCompliant:
-			neverCompliant = append(neverCompliant, rsv)
-		}
-	}
-	return compliant, needActivation, needIndices, neverCompliant
-}
-
-// PrepareSetupRequests creates new reservation requests compliant with the requirements.
-// This function creates as many reservations requests as there are
-// scion paths compatible with the requirements.
-func (e *requirements) PrepareSetupRequests(paths []snet.Path,
-	localAS addr.AS, now time.Time, expTime time.Time) ([]*seg.SetupReq, error) {
-
-	// filter paths
-	filtered := e.predicate.Eval(paths)
-	requests := make([]*seg.SetupReq, len(filtered))
-	// create setup requests
-	for i, p := range filtered {
-		steps, err := base.StepsFromSnet(p)
-		if err != nil {
-			return nil, err
-		}
-		// chop all hop fields except those to reach the next AS
-		rawPath, err := base.ChoppedPathFromDataplane(p.Dataplane())
-		if err != nil {
-			return nil, err
-		}
-
-		id := reservation.ID{
-			ASID:   localAS,
-			Suffix: make([]byte, reservation.IDSuffixSegLen),
-		}
-		req := &seg.SetupReq{
-			Request:        *base.NewRequest(now, &id, 0, len(steps)),
-			ExpirationTime: expTime,
-			// RLC:            rlc,
-			PathType:    e.pathType,
-			MinBW:       e.minBW,
-			MaxBW:       e.maxBW,
-			SplitCls:    e.splitCls,
-			PathProps:   e.endProps,
-			AllocTrail:  reservation.AllocationBeads{},
-			Steps:       steps,
-			CurrentStep: 0,
-			RawPath:     rawPath,
-		}
-		requests[i] = req
-		log.Debug("keeper prepared request", "id", req.ID, "dst", req.Steps.DstIA(),
-			"path", req.Steps)
-	}
-	return requests, nil
-}
-
-func (e *requirements) PrepareRenewalRequests(rsvs []*seg.Reservation, now, expTime time.Time) (
-	[]*seg.SetupReq, error) {
-
-	requests := []*seg.SetupReq{}
-	for _, rsv := range rsvs {
-		if !e.predicate.EvalInterfaces(rsv.Steps.Interfaces()) {
-			continue
-		}
-		req := &seg.SetupReq{
-			Request: *base.NewRequest(now, &rsv.ID, rsv.NextIndexToRenew(),
-				len(rsv.Steps)),
-			ExpirationTime: expTime,
-			// RLC:            e.RLC,
-			PathType:    rsv.PathType,
-			MinBW:       e.minBW,
-			MaxBW:       e.maxBW,
-			SplitCls:    rsv.TrafficSplit,
-			PathProps:   rsv.PathEndProps,
-			AllocTrail:  reservation.AllocationBeads{}, // at source
-			Steps:       rsv.Steps,
-			RawPath:     rsv.RawPath,
-			Reservation: rsv,
-		}
-		requests = append(requests, req)
-	}
-	return requests, nil
-}
-
-func (e *requirements) SelectRequests(requests []*seg.SetupReq, n int) []int {
-	if n > len(requests) {
-		n = len(requests)
-	}
-	rand.Seed(time.Now().UnixNano()) // TODO(juagargi) select using better criteria
-	return rand.Perm(n)
-}
-
-// Compliance checks the given reservation against the requirements and returns true if
-// it satisfies them, plus the reservation is good at least until the time in `atLeastUntil`.
-func (e requirements) Compliance(rsv *seg.Reservation, atLeastUntil time.Time) Compliance {
-	switch {
-	case rsv.PathType != e.pathType:
-		return NeverCompliant
-	case rsv.TrafficSplit != e.splitCls:
-		return NeverCompliant
-	case rsv.PathEndProps != e.endProps:
-		return NeverCompliant
-	case !e.predicate.EvalInterfaces(rsv.Steps.Interfaces()):
-		return NeverCompliant
-	}
-	indices := rsv.Indices.Filter(
-		seg.ByExpiration(atLeastUntil),
-		seg.ByMinBW(e.minBW),
-		seg.ByMaxBW(e.maxBW),
-		seg.NotConfirmed(),
+// compliance finds the status of the reservation in regard with the configuration.
+// It returns Compliant if it contains active indices compatible with the configuration,
+// NeedsActivation if the compatible index(es) exist but need to be activated, or
+// NeedsIndices if no compatible index exists.
+// The function expects a non-nil reservation.
+func compliance(e *entry, until time.Time) Compliance {
+	idxs := e.rsv.Indices.Filter(
+		segment.ByMinBW(e.conf.minBW),
+		segment.ByMaxBW(e.conf.maxBW),
+		segment.NotConfirmed(),
+		segment.ByExpiration(until),
 	)
-	if len(indices) == 0 { // no valid index found
+	switch {
+	case len(idxs) == 0:
 		return NeedsIndices
-	}
-	if len(indices.Filter(seg.NotSwitchableFrom(rsv.ActiveIndex()))) == 0 { // no active index
+	case len(idxs.Filter(segment.NotSwitchableFrom(e.rsv.ActiveIndex()))) == 0:
 		return NeedsActivation
+	default:
+		return Compliant
 	}
-	return Compliant
 }
 
-// splitRequests takes a slice of requests and indices, and returns two slices:
-// first, those elements in the indices, in the exact order as specified in indices.
-// second, all the other elements.
-func splitRequests(requests []*seg.SetupReq, indices []int) (
-	[]*seg.SetupReq, []*seg.SetupReq) {
-	a := make([]*seg.SetupReq, len(indices))
-	b := append(requests[:0:0], requests...)
-	for i, idx := range indices {
-		a[i] = requests[idx]
-		b[idx] = b[len(b)-i-1]
-	}
-	return a, b[:len(b)-len(a)]
-}
-
-func parseInitial(conf *conf.Reservations) (map[addr.IA][]requirements, error) {
+func parseInitial(conf *conf.Reservations) ([]*configuration, error) {
 	if conf == nil {
 		log.Info("COLIBRI not keeping any reservations")
 		return nil, nil
 	}
 	log.Info("COLIBRI will keep reservations", "count", len(conf.Rsvs))
-	initial := make(map[addr.IA][]requirements)
-	for _, r := range conf.Rsvs {
+	initial := make([]*configuration, len(conf.Rsvs))
+	for i, r := range conf.Rsvs {
 		seq, err := pathpol.NewSequence(r.PathPredicate)
 		if err != nil {
 			return nil, err
 		}
 
-		if r.RequiredCount <= 0 {
-			return nil, serrors.New("required reservation count must be positive",
-				"count", r.RequiredCount)
-		}
 		if r.MinSize > r.MaxSize {
 			return nil, serrors.New("min bw must be less or equal than max bw",
 				"min_bw", r.MinSize, "max_bw", r.MaxSize)
 		}
 
-		initial[r.DstAS] = append(initial[r.DstAS], requirements{
-			pathType:      r.PathType,
-			predicate:     seq,
-			minBW:         r.MinSize,
-			maxBW:         r.MaxSize,
-			splitCls:      r.SplitCls,
-			endProps:      reservation.PathEndProps(r.EndProps),
-			minActiveRsvs: r.RequiredCount,
-		})
-	}
-	return initial, nil
-}
-
-func printRsvs(rsvs []*segment.Reservation) string {
-	strs := make([]string, len(rsvs))
-	for i, r := range rsvs {
-		strs[i] = "ID:" + r.ID.String()
-	}
-	return fmt.Sprintf("[%d] %s", len(rsvs), strings.Join(strs, ","))
-}
-
-func filterEmptyErrors(errs []error) []error {
-	nonEmpty := make([]error, 0)
-	for _, err := range errs {
-		if err != nil {
-			nonEmpty = append(nonEmpty, err)
+		initial[i] = &configuration{
+			dst:       r.DstAS,
+			pathType:  r.PathType,
+			predicate: seq,
+			minBW:     r.MinSize,
+			maxBW:     r.MaxSize,
+			splitCls:  r.SplitCls,
+			endProps:  reservation.PathEndProps(r.EndProps),
 		}
 	}
-	return nonEmpty
+	return initial, nil
 }

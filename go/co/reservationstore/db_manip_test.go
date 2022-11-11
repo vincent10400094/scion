@@ -39,11 +39,8 @@ func AddSegmentReservation(t testing.TB, db backend.DB, ASID string, count int) 
 
 	r := newTestSegmentReservation(t, ASID) // the suffix will be overwritten
 	for i := 0; i < count; i++ {
-		p := test.NewSnetPath("1-"+ASID, i, 1, "1-ff00:0:2")
-		r.Steps, err = base.StepsFromSnet(p)
-		require.NoError(t, err)
-		r.RawPath, err = base.PathFromDataplanePath(p.Dataplane())
-		require.NoError(t, err)
+		r.Steps = test.NewSteps("1-"+ASID, i, 1, "1-ff00:0:2")
+		r.TransportPath = test.NewColPathMin(r.Steps)
 		err = db.NewSegmentRsv(ctx, r)
 		require.NoError(t, err, "iteration i = %d", i)
 	}
@@ -85,8 +82,8 @@ func (c *testCapacities) CapacityEgress(egress uint16) uint64   { return c.Cap }
 func newTestSegmentReservation(t testing.TB, ASID string) *segment.Reservation {
 	t.Helper()
 	r := segment.NewReservation(xtest.MustParseAS(ASID))
-	r.Ingress = 0
-	r.Egress = 1
+	r.Steps[r.CurrentStep].Ingress = 0
+	r.Steps[r.CurrentStep].Egress = 1
 	r.TrafficSplit = 3
 	r.PathEndProps = reservation.EndLocal | reservation.StartLocal
 	expTime := util.SecsToTime(1)
