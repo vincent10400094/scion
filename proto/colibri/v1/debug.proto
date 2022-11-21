@@ -1,0 +1,86 @@
+// Copyright 2022 ETH Zurich
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+syntax = "proto3";
+
+option go_package = "github.com/scionproto/scion/go/pkg/proto/colibri";
+
+package proto.colibri.v1;
+
+// import "google/protobuf/timestamp.proto";
+import "proto/colibri/v1/colibri.proto";
+
+
+service ColibriDebugCommandsService {
+    // Start a Traceroute RPC.
+    rpc CmdTraceroute(CmdTracerouteRequest) returns (CmdTracerouteResponse) {}
+}
+
+// This is the service that listens for calls from another colibri service. For each call
+// in the service above we should have a corresponding call here, if we need to interact
+// with more than just our local AS colibri service.
+// E.g. traceroute needs a message to walk thru all services, thus it needs an RPC here.
+service ColibriDebugService {
+    // Receives a traceroute request and calls the next AS' Traceroute RPC.
+    rpc Traceroute(TracerouteRequest) returns (TracerouteResponse) {}
+}
+
+
+message CmdTracerouteRequest {
+    // the ID of the segR to check. It can also be used as transport (see below).
+    ReservationID id = 1;
+    // always use COLIBRI as transport while performing the traceroute.
+    bool use_colibri = 2;
+}
+
+message CmdTracerouteResponse {
+    // requested segR for traceroute.
+    ReservationID id = 1;
+    // sequence of IAs traversed by traceroute.
+    repeated uint64 ia_stamp = 2;
+    // sequence of timestamps when the request was received by AS i.
+    repeated uint64 time_stamp_from_request = 3;
+    // sequence of timestamps when the response was sent by AS i.
+    repeated uint64 time_stamp_at_response = 4;
+    // if an error exists, the complete Error structure.
+    ErrorInIA error_found = 10;
+}
+
+message TracerouteRequest {
+    // the ID of the segR to check. It can also be used as transport (see below).
+    ReservationID id = 1;
+    // always use COLIBRI as transport while performing the traceroute.
+    bool use_colibri = 2;
+}
+
+message TracerouteResponse {
+    // requested segR for traceroute.
+    ReservationID id = 1;
+    // sequence of IAs traversed by traceroute.
+    repeated uint64 ia_stamp = 2;
+    // sequence of timestamps when the request was received by AS i.
+    repeated uint64 time_stamp_from_request = 3;
+    // sequence of timestamps when the response was sent by AS i.
+    repeated uint64 time_stamp_at_response = 4;
+    // if an error exists, the complete Error structure.
+    ErrorInIA error_found = 10;
+}
+
+
+message ErrorInIA {
+    // where the error originated.
+    uint64 ia = 1;
+    // description of the error.
+    string message = 2;
+}

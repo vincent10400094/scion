@@ -39,6 +39,7 @@ import (
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 )
 
+// ColibriService demultiplexes RPCs to the debug service or regular colibri service.
 type ColibriService struct {
 	Store reservationstorage.Store
 }
