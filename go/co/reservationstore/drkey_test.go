@@ -30,6 +30,7 @@ import (
 	ct "github.com/scionproto/scion/go/co/reservation/test"
 	"github.com/scionproto/scion/go/lib/addr"
 	libcol "github.com/scionproto/scion/go/lib/colibri"
+	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/daemon/mock_daemon"
 	"github.com/scionproto/scion/go/lib/drkey"
@@ -629,16 +630,17 @@ func TestComputeAndValidateE2ESetupResponse(t *testing.T) {
 
 			switch res := tc.response.(type) {
 			case *e2e.SetupResponseSuccess:
-				colibriPath := e2e.DeriveColibriPath(tc.rsvID, tc.token)
-				serializedColPath := make([]byte, colibriPath.Len())
-				err := colibriPath.SerializeTo(serializedColPath)
+				colibriPath, err := e2e.DeriveColibriPath(tc.rsvID, tc.token).ToMinimal()
 				require.NoError(t, err)
+				require.NotNil(t, colibriPath)
 
 				clientRes := &libcol.E2EResponse{
 					Authenticators: res.Authenticators,
 					ColibriPath: path.Path{
 						DataplanePath: path.Colibri{
-							Raw: serializedColPath,
+							Colibri: caddr.Colibri{
+								Path: *colibriPath,
+							},
 						},
 					},
 				}

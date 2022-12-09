@@ -27,6 +27,7 @@ import (
 	"github.com/scionproto/scion/go/co/reservation/segment"
 	"github.com/scionproto/scion/go/co/reservationstorage"
 	"github.com/scionproto/scion/go/lib/addr"
+	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
@@ -249,10 +250,13 @@ func (m *manager) SetupRequest(ctx context.Context, req *segment.SetupReq) error
 	// because the store expects the steps[0] to always be the initiator (even for down-path
 	// SegRs), we need to reverse the steps and path if the SegR is of down-path type
 	steps := req.Steps
+
+	transport := req.Transport()
 	if req.PathType == reservation.DownPath {
 		steps = steps.Reverse()
 	}
-	res, err := m.store.InitConfirmSegmentReservation(ctx, confirmReq, steps, req.TransportPath)
+	res, err := m.store.InitConfirmSegmentReservation(ctx, confirmReq, steps, transport)
+
 	if err != nil || !res.Success() {
 		origErr := err
 		if res != nil && !res.Success() {
@@ -271,12 +275,20 @@ func (m *manager) SetupRequest(ctx context.Context, req *segment.SetupReq) error
 }
 
 func (m *manager) ActivateRequest(ctx context.Context, req *base.Request, steps base.PathSteps,
-	trasportPath *colpath.ColibriPathMinimal, reverseTraveling bool) error {
+	transportPath *colpath.ColibriPathMinimal, reverseTraveling bool) error {
 
 	if reverseTraveling {
 		steps = steps.Reverse()
 	}
-	res, err := m.store.InitActivateSegmentReservation(ctx, req, steps, trasportPath)
+	var transport *caddr.Colibri
+	if transportPath != nil {
+		transport = &caddr.Colibri{
+			Path: *transportPath,
+			Src:  *caddr.NewEndpointWithAddr(steps.SrcIA(), addr.SvcCOL.Base()),
+			Dst:  *caddr.NewEndpointWithAddr(steps.DstIA(), addr.SvcCOL.Base()),
+		}
+	}
+	res, err := m.store.InitActivateSegmentReservation(ctx, req, steps, transport)
 	if err != nil {
 		return err
 	}

@@ -30,8 +30,8 @@ import (
 // Reservation represents an E2E reservation.
 type Reservation struct {
 	ID                  reservation.ID
-	Steps               base.PathSteps
-	CurrentStep         int
+	Steps               base.PathSteps         // used to find the current AS
+	CurrentStep         int                    // a given AS appears only once inside Steps
 	SegmentReservations []*segment.Reservation // stitched segment reservations
 	Indices             Indices
 }
@@ -52,6 +52,16 @@ func (r *Reservation) IsLastAS() bool {
 	return r.CurrentStep == len(r.Steps)-1
 }
 
+// IsStitchPoint returns true if the AS represented by ia is a stitch point.
+// The stitching points are present at the end of a segment and beginning of another one.
+func (r *Reservation) IsStitchPoint(ia addr.IA) bool {
+	if len(r.SegmentReservations) != 2 {
+		return false
+	}
+	return r.SegmentReservations[0].Steps.DstIA() == ia &&
+		r.SegmentReservations[1].Steps.SrcIA() == ia
+}
+
 func (r *Reservation) String() string {
 	if r == nil {
 		return "<nil>"
@@ -69,12 +79,12 @@ func (r *Reservation) String() string {
 }
 
 // Validate will return an error for invalid values.
-// It doesn not check for valid path properties and correct end/start AS ID when stiching.
+// It does not check for valid path properties and correct end/start AS ID when stitching.
 func (r *Reservation) Validate() error {
 	if err := base.ValidateIndices(r.Indices); err != nil {
 		return err
 	}
-	if len(r.SegmentReservations) < 1 || len(r.SegmentReservations) > 3 {
+	if len(r.SegmentReservations) < 1 || len(r.SegmentReservations) > 2 {
 		return serrors.New("wrong number of segment reservations referenced in E2E reservation",
 			"number", len(r.SegmentReservations))
 	}

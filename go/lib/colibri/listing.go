@@ -27,7 +27,7 @@ import (
 )
 
 // TODO(juagargi) rename to something like SegRsvInfo
-type ReservationLooks struct {
+type SegRDetails struct {
 	Id             reservation.ID
 	SrcIA          addr.IA // might be different than the Id.ASID if the segment is e.g. down
 	DstIA          addr.IA
@@ -36,10 +36,10 @@ type ReservationLooks struct {
 	MaxBW          reservation.BWCls
 	AllocBW        reservation.BWCls
 	Split          reservation.SplitCls
-	PathSteps      []base.PathStep
+	Steps          []base.PathStep
 }
 
-func (l *ReservationLooks) Copy() *ReservationLooks {
+func (l *SegRDetails) Copy() *SegRDetails {
 	tmp := *l
 	return &tmp
 }
@@ -47,13 +47,16 @@ func (l *ReservationLooks) Copy() *ReservationLooks {
 // StitchableSegments is a collection of up, core and down segments that could be stitched
 // to reach a destination, after a combination process.
 type StitchableSegments struct {
-	SrcIA          addr.IA
-	DstIA          addr.IA
-	Up, Core, Down []*ReservationLooks
+	SrcIA addr.IA
+	DstIA addr.IA
+
+	Up   []*SegRDetails
+	Core []*SegRDetails
+	Down []*SegRDetails
 }
 
 func (s *StitchableSegments) String() string {
-	printSegments := func(dir string, segments []*ReservationLooks) []string {
+	printSegments := func(dir string, segments []*SegRDetails) []string {
 		strs := make([]string, len(segments))
 		for i, s := range segments {
 			strs[i] = fmt.Sprintf("[%3d] %6s %s: %s -> %s (until %s, [max,min,alloc]=[%d,%d,%d])",
@@ -78,8 +81,8 @@ func (s *StitchableSegments) Copy() *StitchableSegments {
 	}
 }
 
-func copyReservationLooks(rsvs []*ReservationLooks) []*ReservationLooks {
-	ret := make([]*ReservationLooks, len(rsvs))
+func copyReservationLooks(rsvs []*SegRDetails) []*SegRDetails {
+	ret := make([]*SegRDetails, len(rsvs))
 	for i, r := range rsvs {
 		ret[i] = r.Copy()
 	}

@@ -135,7 +135,7 @@ func (s *ServerStack) init(ctx context.Context, serverAddr *snet.UDPAddr, debugS
 		}
 	}
 
-	client, server, err := s.initQUICSockets(ctx, daemonAddr)
+	client, server, err := s.initQUICSockets(daemonAddr)
 	if err != nil {
 		return err
 	}
@@ -182,7 +182,7 @@ func (s *ServerStack) init(ctx context.Context, serverAddr *snet.UDPAddr, debugS
 	return nil
 }
 
-func (s *ServerStack) initQUICSockets(ctx context.Context, daemonAddr string) (
+func (s *ServerStack) initQUICSockets(daemonAddr string) (
 	net.PacketConn, net.PacketConn, error) {
 
 	reconnectingDispatcher := reconnect.NewDispatcherService(reliable.NewDispatcher(""))
@@ -201,7 +201,7 @@ func (s *ServerStack) initQUICSockets(ctx context.Context, daemonAddr string) (
 		},
 	}
 	client, err := s.clientNet.Listen(
-		ctx,
+		context.Background(),
 		"udp",
 		&net.UDPAddr{IP: s.serverAddr.Host.IP},
 		addr.SvcNone,
@@ -222,10 +222,10 @@ func (s *ServerStack) initQUICSockets(ctx context.Context, daemonAddr string) (
 		},
 	}
 	server, err := s.serverNet.Listen(
-		context.TODO(),
+		context.Background(),
 		"udp",
 		s.serverAddr.Host,
-		addr.SvcNone,
+		addr.SvcCOL,
 	)
 	if err != nil {
 		return nil, nil, serrors.WrapStr("unable to initialize server QUIC connection", err)

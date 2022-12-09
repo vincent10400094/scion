@@ -31,7 +31,7 @@ import (
 
 // FullTrip is a set of stitched segment reservations that would allow to setup an E2E rsv.
 // The length of a fulltrip is 1, 2 or 3 segments.
-type FullTrip []*ReservationLooks // in order
+type FullTrip []*SegRDetails // in order
 
 func (t FullTrip) Validate() error {
 	if len(t) < 1 || len(t) > 3 {
@@ -53,9 +53,9 @@ func (t FullTrip) PathSteps() base.PathSteps {
 	if len(t) == 0 {
 		return base.PathSteps{}
 	}
-	steps := append(base.PathSteps{}, t[0].PathSteps...)
+	steps := append(base.PathSteps{}, t[0].Steps...)
 	for i := 1; i < len(t); i++ {
-		segment := t[i].PathSteps
+		segment := t[i].Steps
 		assert(len(segment) > 0, "bad segment rsv. path (empty): %s", t[i])
 		assert(segment[0].Ingress == 0,
 			"bad segment rsv. path (starts with nonzero ingress): %s", t[i])
@@ -66,6 +66,50 @@ func (t FullTrip) PathSteps() base.PathSteps {
 			steps, segment)
 		steps[len(steps)-1].Egress = segment[0].Egress
 		steps = append(steps, segment[1:]...)
+	}
+	return steps
+}
+
+// ShortcutSteps returns the steps of this FullTrip without repeating any AS.
+// The segments never repeat an AS, but by stitching more than one, it could simply appear in
+// the up and down segments, thus duplicating the AS in the FullTrip.
+// Procedure and rationale:
+// For a stitch point there is no shortcut possible: stitch points are bridges between two segments,
+// and they are core ASes, since they must stitch up-core, core-down or up-down segments.
+// For any non stitch point (i.e. non core ASes), they must appear only in the up or down segments.
+// If a given AS appears twice, we can remove all steps between the first and second appearance,
+// as this is exactly the definition of shortcut.
+// Since all segments are free from duplicated ASes, checking inside the stitched steps for the
+// appearance of duplicated ASes is equivalent as looking for them in the first segment, and then
+// in the second.
+func (t FullTrip) ShortcutSteps() base.PathSteps {
+	if len(t) == 0 {
+		return base.PathSteps{}
+	}
+	// make a copy of the segments to keep the originals intact
+	segments := make([]base.PathSteps, len(t))
+	for i, s := range t {
+		segments[i] = append(s.Steps[:0:0], s.Steps...)
+	}
+
+	// easily identify stitching points
+	stitchPoints := make(map[addr.IA]struct{})
+	for i := 1; i < len(segments); i++ {
+		assert(segments[i-1].DstIA() == segments[i].SrcIA(),
+			"bad logic: segments don't end/start in the same IA\nSegment: %s\nSegment: %s",
+			segments[i-1], segments[i])
+		stitchPoints[segments[i].SrcIA()] = struct{}{}
+	}
+
+	// obtain the stitched steps
+	steps := t.PathSteps()
+
+	// for every non stitch point IA in the original steps, shortcut it
+	for _, step := range steps {
+		if _, ok := stitchPoints[step.IA]; ok {
+			continue
+		}
+		steps = shortcutSteps(steps, step.IA)
 	}
 	return steps
 }
@@ -156,7 +200,7 @@ func (t FullTrip) BW() uint64 {
 func (t FullTrip) NumberOfASes() int {
 	num := 0
 	for _, l := range t {
-		num += len(l.PathSteps)
+		num += len(l.Steps)
 	}
 	num -= len(t) - 1 // don't double count stitching points
 	return num
@@ -208,7 +252,7 @@ func combineAll(stitchable *StitchableSegments) []*FullTrip {
 	}
 	fulltrips := make([]*FullTrip, 0)
 	// check which of the up segments do not reach the destination
-	ups := make([]*ReservationLooks, 0, len(stitchable.Up))
+	ups := make([]*SegRDetails, 0, len(stitchable.Up))
 	for _, s := range stitchable.Up {
 		if s.DstIA == stitchable.DstIA {
 			trip := &FullTrip{s.Copy()}
@@ -296,12 +340,43 @@ func combineAll(stitchable *StitchableSegments) []*FullTrip {
 }
 
 // segmentsToMap sorts the reservation looks by source AS.
-func segmentsToMap(sgmts []*ReservationLooks) map[addr.IA][]*ReservationLooks {
-	segsPerSrc := make(map[addr.IA][]*ReservationLooks, len(sgmts))
+func segmentsToMap(sgmts []*SegRDetails) map[addr.IA][]*SegRDetails {
+	segsPerSrc := make(map[addr.IA][]*SegRDetails, len(sgmts))
 	for _, r := range sgmts {
 		segsPerSrc[r.SrcIA] = append(segsPerSrc[r.SrcIA], r)
 	}
 	return segsPerSrc
+}
+
+// shortcutSteps is a helper function that removes duplicates of `ia` in the steps, by
+// performing a shortcut between the first appearance and the second.
+func shortcutSteps(steps base.PathSteps, ia addr.IA) base.PathSteps {
+	var from, to int
+	for i, step := range steps {
+		if step.IA == ia {
+			from = i
+			break
+		}
+	}
+	for i := from + 1; i < len(steps); i++ {
+		step := steps[i]
+		if step.IA == ia {
+			to = i
+			break
+		}
+	}
+	if to == 0 {
+		// local AS appeared only once (technically it can appear zero or one times)
+		return steps
+	}
+
+	// every step between first and second can be removed
+	// shortcut := make(base.PathSteps, 0, len(steps)+from-to)
+	// shortcut = append(shortcut, steps[:from+1]...)
+	shortcut := steps[:from+1]
+	shortcut[len(shortcut)-1].Egress = steps[to].Egress
+	shortcut = append(shortcut, steps[to+1:]...)
+	return shortcut
 }
 
 // assert is a hard check on an invariant. If the assert fails, a bug is present that

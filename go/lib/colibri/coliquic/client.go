@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/scionproto/scion/go/lib/addr"
+	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/infra/infraenv"
 	"github.com/scionproto/scion/go/lib/infra/messenger"
@@ -123,6 +124,7 @@ func (o *ServiceClientOperator) ColibriClientForIA(ctx context.Context, dst *add
 	return o.colibriClient(ctx, addr)
 }
 
+// deleteme:
 // the client seems not to be working correctly (it dials to a wrong destination??)
 
 // ColibriClient finds or creates a ColibriClient that can reach the next neighbor in
@@ -131,10 +133,10 @@ func (o *ServiceClientOperator) ColibriClientForIA(ctx context.Context, dst *add
 func (o *ServiceClientOperator) ColibriClient(
 	ctx context.Context,
 	egressID uint16,
-	transportPath *colpath.ColibriPathMinimal,
+	transport *caddr.Colibri,
 ) (colpb.ColibriServiceClient, error) {
 
-	rAddr, err := o.neighborAddrWithTransport(egressID, transportPath)
+	rAddr, err := o.neighborAddrWithTransport(egressID, transport)
 	if err != nil {
 		return nil, err
 	}
@@ -144,22 +146,22 @@ func (o *ServiceClientOperator) ColibriClient(
 func (o *ServiceClientOperator) DebugClient(
 	ctx context.Context,
 	egressID uint16,
-	transportPath *colpath.ColibriPathMinimal,
+	colAddr *caddr.Colibri,
 ) (colpb.ColibriDebugServiceClient, error) {
 
-	rAddr, err := o.neighborAddrWithTransport(egressID, transportPath)
+	rAddr, err := o.neighborAddrWithTransport(egressID, colAddr)
 	if err != nil {
 		return nil, err
 	}
 	return o.debugClient(ctx, rAddr)
 }
 
+// deleteme replace neighborAddrWithTransport with calls to this function:
 func (o *ServiceClientOperator) neighborAddrWithTransport(
 	egressID uint16,
-	transportPath *colpath.ColibriPathMinimal,
+	transport *caddr.Colibri,
 ) (*snet.UDPAddr, error) {
 
-	// egressID := transp.Steps[transp.CurrentStep].Egress
 	rAddr, ok := o.neighborAddr(egressID)
 	if !ok {
 		return nil, serrors.New("client operator not yet initialized for this egress ID",
@@ -167,20 +169,20 @@ func (o *ServiceClientOperator) neighborAddrWithTransport(
 	}
 	rAddr = rAddr.Copy() // preserve the original data
 
-	// deleteme try to send using directly transportPath
+	// deleteme try to send using directly the transport IA and Host fields
 	// if transport is nil, just use a path obtained here (above thru neighborAddr)
 	switch {
-	case transportPath == nil:
+	case transport == nil:
 		log.Info("colibri client operator, first segment reservation setup", "egress", egressID)
-	case transportPath.Type() == colpath.PathType:
+	case transport.Path.Type() == colpath.PathType:
 		// prepare remote address with the new path
-		buf := make([]byte, transportPath.Len())
-		transportPath.SerializeTo(buf)
-		rAddr.Path = snetpath.Colibri{Raw: buf}
+		rAddr.Path = snetpath.Colibri{
+			Colibri: *transport,
+		}
 	default:
 		// nothing but colibri or nil is accepted
 		return nil, serrors.New("error in client operator: not a valid transport",
-			"path_type", transportPath.Type())
+			"path_type", transport.Path.Type())
 	}
 	return rAddr, nil
 }
@@ -257,7 +259,7 @@ func (o *ServiceClientOperator) periodicResolveNeighbors(topo TopoLoader) {
 	for {
 		time.Sleep(15 * time.Minute)
 		neighbors := neighbors(topo)
-		log.Debug("colibri client operator periodically findind neighbors",
+		log.Debug("colibri client operator periodically finding neighbors",
 			"count", len(neighbors))
 		newAddrBook := make(map[uint16]*snet.UDPAddr)
 		remainingIAs := make(map[uint16]addr.IA)

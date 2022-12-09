@@ -287,6 +287,8 @@ message E2ESetupRequest {
         uint32 current_step = 4;
         // the path the request will follow.
         repeated PathStep steps = 5;
+        // the original path without shortcuts that the request would follow
+        repeated PathStep steps_no_shortcuts = 6;
     }
     message E2ESetupBead {
         // each on path AS writes here the max. BW it's willing to give.
@@ -374,9 +376,11 @@ message SetupReservationRequest {
     // the SegR IDs to stitch for this EER.
     repeated ReservationID segments = 7;
     // the transport path.
-    repeated PathStep path_steps = 8;
+    repeated PathStep steps = 8;
+    // the original transport path without any shortcuts
+    repeated PathStep steps_no_shortcuts = 9;
     // drkey authenticators.
-    Authenticators authenticators = 9;
+    Authenticators authenticators = 10;
 }
 
 message SetupReservationResponse {

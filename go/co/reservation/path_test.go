@@ -20,6 +20,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	"github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/snet"
@@ -256,7 +257,7 @@ func TestPathStepsFromSnet(t *testing.T) {
 			snetPath:    nil,
 			expectedErr: false,
 		},
-		"colibri_with_raw_path": {
+		"colibri_path": {
 			snetPath: path.Path{
 				Meta: snet.PathMetadata{
 					Interfaces: []snet.PathInterface{
@@ -271,9 +272,9 @@ func TestPathStepsFromSnet(t *testing.T) {
 					},
 				},
 				DataplanePath: path.Colibri{
-					Raw: xtest.MustParseHexString("000000000000000080000003" +
-						"0123456789ab0123456789ab000000000d00000000000001" +
-						"0123456700010002012345670001000001234567"),
+					Colibri: addr.Colibri{
+						Path: colpath.ColibriPathMinimal{},
+					},
 				},
 			},
 			expected: PathSteps{

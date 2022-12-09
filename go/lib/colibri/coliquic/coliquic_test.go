@@ -38,6 +38,7 @@ import (
 	"google.golang.org/grpc/peer"
 
 	"github.com/scionproto/scion/go/co/reservation/test"
+	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/snet"
@@ -202,7 +203,7 @@ func TestColibriGRPC(t *testing.T) {
 			require.True(t, ok)
 			require.Greater(t, usage, uint64(0))
 			return &colpb.SegmentSetupResponse{SuccessFailure: &colpb.SegmentSetupResponse_Token{
-				Token: p.Addr.(*snet.UDPAddr).Path.(path.Colibri).Raw,
+				Token: p.Addr.(*snet.UDPAddr).Path.(path.Colibri).Path.Raw,
 			}}, nil
 		})
 
@@ -252,7 +253,7 @@ func TestColibriGRPC(t *testing.T) {
 	gRPCClient := colpb.NewColibriServiceClient(conn)
 	res, err := gRPCClient.SegmentSetup(ctx, &colpb.SegmentSetupRequest{})
 	require.NoError(t, err)
-	require.Equal(t, clientAddr.(*snet.UDPAddr).Path.(path.Colibri).Raw, res.GetToken())
+	require.Equal(t, clientAddr.(*snet.UDPAddr).Path.(path.Colibri).Path.Raw, res.GetToken())
 	require.True(t, testInterceptorCalled)
 
 	gRPCServer.GracefulStop()
@@ -363,17 +364,17 @@ func mockScionAddress(t *testing.T, ia, host string) net.Addr {
 // mockColibriAddress returns a SCION address with a Colibri path.
 func mockColibriAddress(t *testing.T, ia, host string) net.Addr {
 	t.Helper()
-	p := newTestColibriPath()
-	buffLen := 8 + 24 + (len(p.HopFields) * 8) // timestamp + infofield + 3*hops
-	buff := make([]byte, buffLen)
-	err := p.SerializeTo(buff)
-	require.NoError(t, err)
 
+	minimal, err := newTestColibriPath().ToMinimal()
+	require.NoError(t, err)
+	require.NotNil(t, minimal)
 	return &snet.UDPAddr{
 		IA:   xtest.MustParseIA(ia),
 		Host: xtest.MustParseUDPAddr(t, host),
 		Path: path.Colibri{
-			Raw: buff,
+			Colibri: caddr.Colibri{
+				Path: *minimal,
+			},
 		},
 	}
 }

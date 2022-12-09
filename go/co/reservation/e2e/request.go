@@ -24,10 +24,14 @@ import (
 	"github.com/scionproto/scion/go/lib/serrors"
 )
 
+// Request is an EER generic request. It contains the source and destination host addresses
+// (currently IPs) as well as the fields from the base Request: timestamp, ID, index and
+// authenticators.
+// All the fields are immutable (part of the authenticated data).
 type Request struct {
-	base.Request
-	SrcHost net.IP
-	DstHost net.IP
+	base.Request // ID, index, timestamp, and authenticators
+	SrcHost      net.IP
+	DstHost      net.IP
 }
 
 func (r *Request) Len() int {
@@ -53,9 +57,9 @@ type SetupReq struct {
 	SegmentRsvs            []col.ID
 	CurrentSegmentRsvIndex int // index in SegmentRsv above. Transfer nodes use the first segment
 	Steps                  base.PathSteps
+	StepsNoShortcuts       base.PathSteps
 	CurrentStep            int
 	AllocationTrail        []col.BWCls
-	TransferIndices        []int // up to two indices (from Path) where the transfers are
 }
 
 func (r *SetupReq) IsFirstAS() bool {

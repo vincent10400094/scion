@@ -15,38 +15,32 @@
 package path
 
 import (
-	"time"
-
-	libcolibri "github.com/scionproto/scion/go/lib/colibri/dataplane"
+	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/slayers"
-	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
+	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
+	"github.com/scionproto/scion/go/lib/snet"
 )
 
 // Colibri represents a Colibri path in the data plane. For now, only static MACs are supported.
 type Colibri struct {
-	// Raw is the raw representation of this path.
-	Raw []byte
-
-	counter uint32
+	caddr.Colibri
 }
 
+var _ snet.DataplanePath = Colibri{}
+
 func (p Colibri) SetPath(s *slayers.SCION) error {
-	var colPath colibri.ColibriPathMinimal
-	if err := colPath.DecodeFromBytes(p.Raw); err != nil {
-		return err
-	}
-	colPath.InfoField.OrigPayLen = s.PayloadLen
+	p.Path.InfoField.OrigPayLen = s.PayloadLen
+	s.Path, s.PathType = &p.Path, colpath.PathType
 
-	// For EER data packets add a high-precision timestamp
-	if !colPath.InfoField.C {
-		tsRel, err := libcolibri.CreateTsRel(colPath.InfoField.ExpTick, time.Now())
-		if err != nil {
-			return err
-		}
-		colPath.PacketTimestamp = libcolibri.CreateColibriTimestamp(tsRel, 0, p.counter)
-		p.counter += 1
-	}
+	s.SrcIA = p.Src.IA
+	// TODO(juagargi) a problem in the dispatcher prevents the ACK packets from being dispatched
+	// correctly. For now, we need to keep the IP address of the original sender, which is
+	// each one of the colibri services that contact the next colibri service.
+	// s.RawSrcAddr = p.Src.Host
+	// s.SrcAddrType = p.Src.HostType
+	// s.SrcAddrLen = p.Src.HostLen
 
-	s.Path, s.PathType = &colPath, colPath.Type()
+	s.DstIA, s.RawDstAddr, s.DstAddrType, s.DstAddrLen = p.Dst.Raw()
+
 	return nil
 }

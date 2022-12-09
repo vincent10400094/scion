@@ -27,11 +27,13 @@ import (
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri"
 	col "github.com/scionproto/scion/go/lib/colibri"
+	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/ctrl/path_mgmt"
 	"github.com/scionproto/scion/go/lib/drkey"
 	"github.com/scionproto/scion/go/lib/serrors"
+	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/topology"
@@ -197,15 +199,16 @@ func (c grpcConn) ColibriSetupRsv(ctx context.Context, req *col.E2EReservationSe
 	}
 	pbReq := &sdpb.ColibriSetupRsvRequest{
 		Base: &colpb.SetupReservationRequest{
-			Id:             translate.PBufID(&req.Id),
-			Index:          uint32(req.Index),
-			Timestamp:      util.TimeToSecs(req.BaseRequest.TimeStamp),
-			SrcHost:        req.SrcHost,
-			DstHost:        req.DstHost,
-			RequestedBw:    uint32(req.RequestedBW),
-			Segments:       pbSegs,
-			PathSteps:      translate.PBufSteps(req.Steps),
-			Authenticators: &colpb.Authenticators{Macs: req.Authenticators},
+			Id:               translate.PBufID(&req.Id),
+			Index:            uint32(req.Index),
+			Timestamp:        util.TimeToSecs(req.BaseRequest.TimeStamp),
+			SrcHost:          req.SrcHost,
+			DstHost:          req.DstHost,
+			RequestedBw:      uint32(req.RequestedBW),
+			Segments:         pbSegs,
+			Steps:            translate.PBufSteps(req.Steps),
+			StepsNoShortcuts: translate.PBufSteps(req.StepsNoShortcuts),
+			Authenticators:   &colpb.Authenticators{Macs: req.Authenticators},
 		},
 	}
 	client := sdpb.NewDaemonServiceClient(c.conn)
@@ -218,9 +221,13 @@ func (c grpcConn) ColibriSetupRsv(ctx context.Context, req *col.E2EReservationSe
 		for i, b := range sdRes.Base.Failure.AllocTrail {
 			trail[i] = reservation.BWCls(b)
 		}
+		var macs [][]byte
+		if sdRes.Base.Authenticators != nil {
+			macs = sdRes.Base.Authenticators.Macs
+		}
 		return nil, &col.E2ESetupError{
 			E2EResponseError: col.E2EResponseError{
-				Authenticators: sdRes.Base.Authenticators.Macs,
+				Authenticators: macs,
 				Message:        sdRes.Base.Failure.ErrorMessage,
 				FailedAS:       int(sdRes.Base.Failure.FailedStep),
 			},
@@ -231,11 +238,19 @@ func (c grpcConn) ColibriSetupRsv(ctx context.Context, req *col.E2EReservationSe
 	if err != nil {
 		return nil, serrors.WrapStr("parsing next hop", err)
 	}
+	colPath := &colpath.ColibriPathMinimal{}
+	if err := colPath.DecodeFromBytes(sdRes.Base.Success.TransportPath); err != nil {
+		return nil, serrors.WrapStr("error decoding colibri path", err)
+	}
 	return &col.E2EResponse{
 		Authenticators: sdRes.Base.Authenticators.Macs,
 		ColibriPath: &path.Path{
 			DataplanePath: path.Colibri{
-				Raw: sdRes.Base.Success.TransportPath,
+				Colibri: caddr.Colibri{
+					Path: *colPath,
+					Src:  *caddr.NewEndpointWithIP(req.Steps.SrcIA(), req.SrcHost),
+					Dst:  *caddr.NewEndpointWithIP(req.Steps.DstIA(), req.DstHost),
+				},
 			},
 			NextHop: nextHop,
 		},

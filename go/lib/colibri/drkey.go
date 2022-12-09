@@ -32,7 +32,6 @@ import (
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/drkey"
 	"github.com/scionproto/scion/go/lib/serrors"
-	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	snetpath "github.com/scionproto/scion/go/lib/snet/path"
 	"github.com/scionproto/scion/go/lib/util"
 )
@@ -237,8 +236,9 @@ func serializeResponse(res *E2EResponse, steps base.PathSteps, timestamp time.Ti
 		return nil, serrors.New("unsupported non colibri path type",
 			"path_type", common.TypeOf(res.ColibriPath.Dataplane()))
 	}
-	colibriPath := &colpath.ColibriPath{}
-	if err := colibriPath.DecodeFromBytes(colPath.Raw); err != nil {
+
+	colibriPath, err := colPath.Path.ToColibriPath()
+	if err != nil {
 		return nil, serrors.WrapStr("received invalid colibri path", err)
 	}
 
@@ -252,6 +252,7 @@ func serializeResponse(res *E2EResponse, steps base.PathSteps, timestamp time.Ti
 		payloads[i] = make([]byte, 1+4+colibriPath.Len()) // marker + timestamp + path
 		payloads[i][0] = 0                                // success marker
 		copy(payloads[i][1:5], timestampBuff)
+		// TODO(juagargi) why are we serializing the transport path???
 		if err := colibriPath.SerializeTo(payloads[i][5:]); err != nil {
 			return nil, err
 		}

@@ -23,8 +23,8 @@ import (
 	sgt "github.com/scionproto/scion/go/co/reservation/segment"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri"
+	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
-	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 )
 
 // Store is the interface to interact with the reservation store.
@@ -32,41 +32,40 @@ type Store interface {
 	Ready() bool
 	// ListReservations is used to get segments to other ASes.
 	ListReservations(ctx context.Context, dstIA addr.IA, pt reservation.PathType) (
-		[]*colibri.ReservationLooks, error)
+		[]*colibri.SegRDetails, error)
 	AdmitSegmentReservation(
 		ctx context.Context,
 		req *sgt.SetupReq,
-		transportPath *colpath.ColibriPathMinimal,
 	) (sgt.SegmentSetupResponse, error)
 	ConfirmSegmentReservation(
 		ctx context.Context,
 		req *base.Request,
-		transportPath *colpath.ColibriPathMinimal,
+		transport *caddr.Colibri,
 	) (base.Response, error)
 	ActivateSegmentReservation(
 		ctx context.Context,
 		req *base.Request,
-		transportPath *colpath.ColibriPathMinimal,
+		transport *caddr.Colibri,
 	) (base.Response, error)
 	CleanupSegmentReservation(
 		ctx context.Context,
 		req *base.Request,
-		transportPath *colpath.ColibriPathMinimal,
+		transport *caddr.Colibri,
 	) (base.Response, error)
 	TearDownSegmentReservation(
 		ctx context.Context,
 		req *base.Request,
-		transportPath *colpath.ColibriPathMinimal,
+		transport *caddr.Colibri,
 	) (base.Response, error)
 	AdmitE2EReservation(
 		ctx context.Context,
 		req *e2e.SetupReq,
-		transportPath *colpath.ColibriPathMinimal,
+		transport *caddr.Colibri,
 	) (e2e.SetupResponse, error)
 	CleanupE2EReservation(
 		ctx context.Context,
 		req *e2e.Request,
-		transportPath *colpath.ColibriPathMinimal,
+		transport *caddr.Colibri,
 	) (base.Response, error)
 
 	// DeleteExpiredIndices returns the number of indices deleted, and the time for the
@@ -86,19 +85,19 @@ type Store interface {
 	InitSegmentReservation(ctx context.Context, req *sgt.SetupReq) error
 	// InitConfirmSegmentReservation initiates a confirm request.
 	InitConfirmSegmentReservation(ctx context.Context, req *base.Request,
-		steps base.PathSteps, transportPath *colpath.ColibriPathMinimal) (
+		steps base.PathSteps, transport *caddr.Colibri) (
 		base.Response, error)
 
 	InitActivateSegmentReservation(ctx context.Context, req *base.Request,
-		steps base.PathSteps, transportPath *colpath.ColibriPathMinimal) (
+		steps base.PathSteps, transport *caddr.Colibri) (
 		base.Response, error)
 
 	InitCleanupSegmentReservation(ctx context.Context, req *base.Request,
-		steps base.PathSteps, transportPath *colpath.ColibriPathMinimal) (
+		steps base.PathSteps, transport *caddr.Colibri) (
 		base.Response, error)
 
 	InitTearDownSegmentReservation(ctx context.Context, req *base.Request,
-		steps base.PathSteps, transportPath *colpath.ColibriPathMinimal) (
+		steps base.PathSteps, transport *caddr.Colibri) (
 		base.Response, error)
 
 	// -----------------------------------------------------------

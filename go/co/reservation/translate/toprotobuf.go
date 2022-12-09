@@ -66,10 +66,11 @@ func PBufE2ESetupReq(req *e2e.SetupReq) (*colpb.E2ESetupRequest, error) {
 		Base:        base,
 		RequestedBw: uint32(req.RequestedBW),
 		Params: &colpb.E2ESetupRequest_PathParams{
-			Segments:       segs,
-			CurrentSegment: uint32(req.CurrentSegmentRsvIndex),
-			Steps:          PBufSteps(req.Steps),
-			CurrentStep:    uint32(req.CurrentStep),
+			Segments:         segs,
+			CurrentSegment:   uint32(req.CurrentSegmentRsvIndex),
+			Steps:            PBufSteps(req.Steps),
+			StepsNoShortcuts: PBufSteps(req.StepsNoShortcuts),
+			CurrentStep:      uint32(req.CurrentStep),
 		},
 		Allocationtrail: trail,
 	}, nil
@@ -182,7 +183,7 @@ func PBufResponse(res base.Response) *colpb.Response {
 	}
 }
 
-func PBufListResponse(res []*colibri.ReservationLooks) *colpb.ListReservationsResponse {
+func PBufListResponse(res []*colibri.SegRDetails) *colpb.ListReservationsResponse {
 	return &colpb.ListReservationsResponse{
 		Reservations: PBufListReservationLooks(res),
 	}
@@ -199,7 +200,7 @@ func PBufStitchableResponse(res *colibri.StitchableSegments) *colpb.ListStitchab
 }
 
 func PBufListReservationLooks(
-	res []*colibri.ReservationLooks) []*colpb.ListReservationsResponse_ReservationLooks {
+	res []*colibri.SegRDetails) []*colpb.ListReservationsResponse_ReservationLooks {
 
 	looks := make([]*colpb.ListReservationsResponse_ReservationLooks, len(res))
 	for i, l := range res {
@@ -212,7 +213,7 @@ func PBufListReservationLooks(
 			Maxbw:          uint32(l.MaxBW),
 			Allocbw:        uint32(l.AllocBW),
 			Splitcls:       uint32(l.Split),
-			PathSteps:      PBufSteps(l.PathSteps),
+			PathSteps:      PBufSteps(l.Steps),
 		}
 	}
 	return looks

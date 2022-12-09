@@ -33,6 +33,7 @@ import (
 
 func SetupReq(msg *colpb.SegmentSetupRequest, transportPath *colpath.ColibriPathMinimal,
 ) (*segment.SetupReq, error) {
+
 	if msg == nil || msg.Base == nil || msg.Params == nil {
 		return nil, serrors.New("incomplete message", "msg", msg)
 	}
@@ -93,6 +94,7 @@ func E2ESetupRequest(msg *colpb.E2ESetupRequest) (*e2e.SetupReq, error) {
 		SegmentRsvs:            segIds,
 		CurrentSegmentRsvIndex: int(msg.Params.CurrentSegment),
 		Steps:                  PathSteps(msg.Params.Steps),
+		StepsNoShortcuts:       PathSteps(msg.Params.StepsNoShortcuts),
 		CurrentStep:            int(msg.Params.CurrentStep),
 		RequestedBW:            col.BWCls(msg.RequestedBw),
 		AllocationTrail:        trail,
@@ -228,16 +230,16 @@ func StitchableSegments(msg *colpb.ListStitchablesResponse) (*colibri.Stitchable
 	}, nil
 }
 
-func ListResponse(msg *colpb.ListReservationsResponse) ([]*colibri.ReservationLooks, error) {
+func ListResponse(msg *colpb.ListReservationsResponse) ([]*colibri.SegRDetails, error) {
 	return ReservationLooks(msg.Reservations)
 }
 
 func ReservationLooks(msg []*colpb.ListReservationsResponse_ReservationLooks) (
-	[]*colibri.ReservationLooks, error) {
+	[]*colibri.SegRDetails, error) {
 
-	res := make([]*colibri.ReservationLooks, len(msg))
+	res := make([]*colibri.SegRDetails, len(msg))
 	for i, l := range msg {
-		res[i] = &colibri.ReservationLooks{
+		res[i] = &colibri.SegRDetails{
 			Id:             *ID(l.Id),
 			SrcIA:          addr.IA(l.SrcIa),
 			DstIA:          addr.IA(l.DstIa),
@@ -246,7 +248,7 @@ func ReservationLooks(msg []*colpb.ListReservationsResponse_ReservationLooks) (
 			MaxBW:          col.BWCls(l.Maxbw),
 			AllocBW:        col.BWCls(l.Allocbw),
 			Split:          col.SplitCls(l.Splitcls),
-			PathSteps:      PathSteps(l.PathSteps),
+			Steps:          PathSteps(l.PathSteps),
 		}
 	}
 	return res, nil

@@ -65,8 +65,8 @@ func SkipInterface(trips []*colibri.FullTrip) client.RenewalErrorHandler {
 		currTrip := r.CurrentTrip()
 		failedAS := failure.FailedAS
 		for i := 0; i < len(currTrip); i++ {
-			if failedAS < len(currTrip[i].PathSteps) {
-				failingStep = &currTrip[i].PathSteps[failedAS]
+			if failedAS < len(currTrip[i].Steps) {
+				failingStep = &currTrip[i].Steps[failedAS]
 				break
 			}
 			failedAS -= len(currTrip) - 1
@@ -96,7 +96,7 @@ func hash(ft colibri.FullTrip) string {
 // hasInterface returns true if both ingress and egress for that IA are present in the trip.
 func hasInterface(trip *colibri.FullTrip, iface *base.PathStep) bool {
 	for _, l := range *trip {
-		for _, step := range l.PathSteps {
+		for _, step := range l.Steps {
 			if step.IA == iface.IA &&
 				(step.Egress == iface.Egress && step.Ingress == iface.Ingress) {
 

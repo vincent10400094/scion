@@ -45,9 +45,10 @@ func (r *BaseRequest) CreateAuthenticators(ctx context.Context, conn DRKeyGetter
 // E2EReservationSetup has the necessary data for an endhost to setup/renew an e2e reservation.
 type E2EReservationSetup struct {
 	BaseRequest
-	Steps       base.PathSteps
-	RequestedBW reservation.BWCls
-	Segments    []reservation.ID
+	Steps            base.PathSteps
+	StepsNoShortcuts base.PathSteps
+	RequestedBW      reservation.BWCls
+	Segments         []reservation.ID
 }
 
 func (r *E2EReservationSetup) CreateAuthenticators(ctx context.Context, conn DRKeyGetter) error {
@@ -64,7 +65,9 @@ func NewReservation(
 	requestedBW reservation.BWCls,
 ) (*E2EReservationSetup, error) {
 
-	steps := fullTrip.PathSteps()
+	origSteps := fullTrip.PathSteps()
+	steps := fullTrip.ShortcutSteps()
+
 	setupReq := &E2EReservationSetup{
 		BaseRequest: BaseRequest{
 			Id: reservation.ID{
@@ -76,9 +79,10 @@ func NewReservation(
 			SrcHost:   srcHost,
 			DstHost:   dstHost,
 		},
-		Steps:       steps,
-		RequestedBW: requestedBW,
-		Segments:    fullTrip.Segments(),
+		Steps:            steps,
+		StepsNoShortcuts: origSteps,
+		RequestedBW:      requestedBW,
+		Segments:         fullTrip.Segments(),
 	}
 	rand.Read(setupReq.Id.Suffix) // random suffix
 	err := setupReq.CreateAuthenticators(ctx, conn)

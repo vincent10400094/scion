@@ -301,7 +301,7 @@ func (c client) run() int {
 	if err != nil {
 		integration.LogFatal("listing reservations", "err", err)
 	}
-	log.Debug("listed reservations", "list", stitchable.String())
+	fmt.Printf("listed reservations:\n%s\n", stitchable.String())
 	trips := libcol.CombineAll(stitchable)
 	log.Info("computed full trips", "count", len(trips))
 	if len(trips) == 0 {
@@ -316,11 +316,14 @@ func (c client) run() int {
 	// use the reservation
 	c.Remote.Path = p.Dataplane()
 	c.Remote.NextHop = p.UnderlayNextHop()
+	log.Debug("sending message to server",
+		"steps", steps)
 	_, err = conn.WriteTo([]byte("colibri test colibri path"), c.Remote)
 	if err != nil {
 		integration.LogFatal("writing data with colibri", "err", err)
 	}
 	// read echo back again
+	log.Debug("reading message from server")
 	_, raddr, err := conn.ReadFrom(buff)
 	if err != nil {
 		integration.LogFatal("reading data", "err", err)
@@ -331,27 +334,16 @@ func (c client) run() int {
 			"type", common.TypeOf(raddr))
 	}
 	sraddrPath, _ := sraddr.GetPath()
-	sraddrTransportPath, gotColPath := sraddrPath.Dataplane().(path.Colibri)
+	_, gotColPath := sraddrPath.Dataplane().(path.Colibri)
 	if !gotColPath {
-		sraddrReplyPath, ok := sraddrPath.Dataplane().(snet.RawReplyPath)
-		if ok {
-			colPath, ok := sraddrReplyPath.Path.(*colpath.ColibriPathMinimal)
-			if ok {
-				sraddrTransportPath = path.Colibri{
-					Raw: make([]byte, colPath.Len()),
-				}
-				if err := colPath.SerializeTo(sraddrTransportPath.Raw); err != nil {
-					integration.LogFatal("cannot serialize colibri path", "err", err)
-				}
+		if sraddrReplyPath, ok := sraddrPath.Dataplane().(snet.RawReplyPath); ok {
+			if _, ok := sraddrReplyPath.Path.(*colpath.ColibriPathMinimal); ok {
 				gotColPath = true
 			}
 		}
 	}
 	if !gotColPath {
 		integration.LogFatal("non-colibri path type", "type", common.TypeOf(sraddrPath.Dataplane()))
-	}
-	if sraddrTransportPath.Raw == nil {
-		integration.LogFatal("colibri path but empty raw", "path", sraddrTransportPath)
 	}
 	// clean reservation up
 	if err = c.cleanRsv(ctx, &rsvID, 0, steps); err != nil {
@@ -387,7 +379,7 @@ func (c client) createRsv(ctx context.Context, fullTrip *libcol.FullTrip,
 	if err != nil {
 		return reservation.ID{}, nil, err
 	}
-	err = res.ValidateAuthenticators(ctx, c.DRKeyFetcher, fullTrip.PathSteps(), c.Local.Host.IP, now)
+	err = res.ValidateAuthenticators(ctx, c.DRKeyFetcher, setupReq.Steps, c.Local.Host.IP, now)
 	if err != nil {
 		return reservation.ID{}, nil, err
 	}

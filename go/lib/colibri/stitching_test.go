@@ -21,10 +21,82 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	base "github.com/scionproto/scion/go/co/reservation"
+	te "github.com/scionproto/scion/go/co/reservation/test"
 	"github.com/scionproto/scion/go/lib/colibri"
 	ct "github.com/scionproto/scion/go/lib/colibri/coltest"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 )
+
+func TestShortcutSteps(t *testing.T) {
+	cases := map[string]struct {
+		segments []base.PathSteps
+		expected base.PathSteps
+	}{
+		"empty": {
+			segments: []base.PathSteps{},
+			expected: te.NewSteps(),
+		},
+		"longlegs1": {
+			segments: []base.PathSteps{
+				te.NewSteps(0, "1-ff00:0:113", 1, 2, "1-ff00:0:111", 41, 1, "1-ff00:0:110", 0),
+				te.NewSteps(0, "1-ff00:0:110", 1, 41, "1-ff00:0:111", 0),
+			},
+			expected: te.NewSteps(0, "1-ff00:0:113", 1, 2, "1-ff00:0:111", 0),
+		},
+		"longlegs2": {
+			segments: []base.PathSteps{
+				te.NewSteps(0, "1-ff00:0:111", 41, 1, "1-ff00:0:110", 0),
+				te.NewSteps(0, "1-ff00:0:110", 1, 41, "1-ff00:0:111", 1, 1, "1-ff00:0:113", 0),
+			},
+			expected: te.NewSteps(0, "1-ff00:0:111", 1, 1, "1-ff00:0:113", 0),
+		},
+		"abc_cbd": {
+			segments: []base.PathSteps{
+				te.NewSteps(0, "1-1", 1, 2, "1-2", 3, 4, "1-3", 0),
+				te.NewSteps(0, "1-3", 4, 3, "1-2", 5, 6, "1-4", 0),
+			},
+			expected: te.NewSteps(0, "1-1", 1, 2, "1-2", 5, 6, "1-4", 0),
+		},
+		"one_segment": {
+			segments: []base.PathSteps{
+				te.NewSteps(0, "1-1", 1, 2, "1-2", 3, 4, "1-3", 0),
+			},
+			expected: te.NewSteps(0, "1-1", 1, 2, "1-2", 3, 4, "1-3", 0),
+		},
+		"short_segments": {
+			segments: []base.PathSteps{
+				te.NewSteps(0, "1-1", 1, 2, "1-2", 0),
+				te.NewSteps(0, "1-2", 3, 4, "1-3", 0),
+			},
+			expected: te.NewSteps(0, "1-1", 1, 2, "1-2", 3, 4, "1-3", 0),
+		},
+		"no_duplicates": { // abc_cde_efg
+			segments: []base.PathSteps{
+				te.NewSteps(0, "1-1", 1, 2, "1-2", 3, 4, "1-3", 0),
+				te.NewSteps(0, "1-3", 5, 6, "1-4", 7, 8, "1-5", 0),
+				te.NewSteps(0, "1-5", 9, 10, "1-6", 11, 12, "1-7", 0),
+			},
+			// abcdefg
+			expected: te.NewSteps(0, "1-1", 1, 2, "1-2", 3, 4, "1-3", 5, 6, "1-4", 7,
+				8, "1-5", 9, 10, "1-6", 11, 12, "1-7", 0),
+		},
+	}
+	for name, tc := range cases {
+		name, tc := name, tc
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ft := make(colibri.FullTrip, len(tc.segments))
+			for i := range ft {
+				ft[i] = &colibri.SegRDetails{
+					Steps: tc.segments[i],
+				}
+			}
+			got := ft.ShortcutSteps()
+			require.Equal(t, tc.expected, got, "expected != got\n%s\n%s", tc.expected, got)
+		})
+	}
+}
 
 func TestCombineAll(t *testing.T) {
 	cases := map[string]struct {

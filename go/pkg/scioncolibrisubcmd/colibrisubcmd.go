@@ -83,7 +83,7 @@ func Run(ctx context.Context, dst addr.IA, cfg Config) (*Result, error) {
 }
 
 func limitNumberOfStitchableSegs(max int, stSegs *colibri.StitchableSegments) {
-	limit := func(m int, looks *[]*colibri.ReservationLooks) {
+	limit := func(m int, looks *[]*colibri.SegRDetails) {
 		if m < len(*looks) {
 			*looks = (*looks)[:m]
 		}
@@ -93,18 +93,18 @@ func limitNumberOfStitchableSegs(max int, stSegs *colibri.StitchableSegments) {
 	limit(max, &stSegs.Down)
 }
 
-func humanSegLooks(w io.Writer, cs ColorScheme, ptype string, looks []*colibri.ReservationLooks) {
+func humanSegLooks(w io.Writer, cs ColorScheme, ptype string, looks []*colibri.SegRDetails) {
 	idxWidth := int(math.Log10(float64(len(looks)))) + 1
 	for i, look := range looks {
 		fmt.Fprintf(w, "[%*d] %6s %s\n", idxWidth, i, ptype, humanSegLook(cs, look))
 	}
 }
 
-func humanSegLook(cs ColorScheme, look *colibri.ReservationLooks) string {
+func humanSegLook(cs ColorScheme, look *colibri.SegRDetails) string {
 	return strings.Join(cs.KeyValues(
 		"ID", look.Id.String(),
 		"bw", fmt.Sprintf("%3d", look.AllocBW),
-		"steps", humanPathSteps(cs, look.PathSteps),
+		"steps", humanPathSteps(cs, look.Steps),
 		"Expiration", humanStatus(cs, look.ExpirationTime.UTC()),
 	), " ")
 }

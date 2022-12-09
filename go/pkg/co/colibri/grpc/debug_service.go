@@ -25,9 +25,10 @@ import (
 	"github.com/scionproto/scion/go/co/reservation/translate"
 	"github.com/scionproto/scion/go/co/reservationstorage"
 	"github.com/scionproto/scion/go/co/reservationstorage/backend"
+	"github.com/scionproto/scion/go/lib/addr"
+	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/colibri/coliquic"
 	"github.com/scionproto/scion/go/lib/log"
-	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/topology"
 	"github.com/scionproto/scion/go/lib/util"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
@@ -68,30 +69,45 @@ func (s *DebugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 		return errF(err)
 	}
 
-	var colibriTransport *colpath.ColibriPathMinimal
+	var colAddr *caddr.Colibri
 	if req.UseColibri {
 		if segR.CurrentStep == 0 {
 			// since this is the source of the traffic, retrieve the colibri transport path here
-			colibriTransport = segR.TransportPath
+			if segR.TransportPath != nil {
+				colAddr = &caddr.Colibri{
+					Path: *segR.TransportPath,
+					Src:  *caddr.NewEndpointWithAddr(segR.Steps.SrcIA(), addr.SvcCOL.Base()),
+				}
+			}
 		} else {
-			colibriTransport, err = colPathFromCtx(ctx)
+			colAddr, err = colAddrFromCtx(ctx)
 			if err != nil {
 				return errF(status.Errorf(codes.Internal,
 					"error retrieving path at transit: %s", err))
 			}
+			log.Debug("deleteme got a colibri transport from the network",
+				"SRC", colAddr.Src,
+				"DST", colAddr.Dst,
+				"PATH", colAddr.Path,
+			)
 		}
-		if colibriTransport == nil {
+		if colAddr == nil {
 			return errF(status.Errorf(codes.FailedPrecondition, "there is no colibri transport"))
 		}
+		// complete the destination address with the destination stored in the reservation
+		colAddr.Dst = *caddr.NewEndpointWithAddr(segR.Steps.DstIA(), addr.SvcCOL.Base())
+
 		// deleteme
 		log.Debug("debug service info about the colibri transport path",
-			"S", colibriTransport.InfoField.S,
-			"C", colibriTransport.InfoField.C,
-			"R", colibriTransport.InfoField.R,
-			"expiration", util.SecsToTime(colibriTransport.InfoField.ExpTick),
-			"curr_hopfield", colibriTransport.InfoField.CurrHF,
-			"idx", colibriTransport.InfoField.Ver,
-			"bwcls", colibriTransport.InfoField.BwCls,
+			"SRC", colAddr.Src,
+			"DST", colAddr.Dst,
+			"S", colAddr.Path.InfoField.S,
+			"C", colAddr.Path.InfoField.C,
+			"R", colAddr.Path.InfoField.R,
+			"expiration", util.SecsToTime(colAddr.Path.InfoField.ExpTick),
+			"curr_hopfield", colAddr.Path.InfoField.CurrHF,
+			"idx", colAddr.Path.InfoField.Ver,
+			"bwcls", colAddr.Path.InfoField.BwCls,
 		)
 	}
 
@@ -105,7 +121,7 @@ func (s *DebugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 		ctx, cancelF := context.WithDeadline(ctx, deadline.Add(-100*time.Millisecond))
 		defer cancelF()
 
-		client, err := s.Operator.DebugClient(ctx, segR.Egress(), colibriTransport)
+		client, err := s.Operator.DebugClient(ctx, segR.Egress(), colAddr)
 		if err != nil {
 			return errF(status.Errorf(codes.FailedPrecondition, "error using operator: %s", err))
 		}

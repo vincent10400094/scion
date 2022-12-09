@@ -72,7 +72,7 @@ func (f *defaultFetcher) listReservations(ctx context.Context, req *sdpb.Colibri
 	*sdpb.ColibriListRsvsResponse, error) {
 
 	dstIA := addr.IA(req.Base.DstIa)
-	f.sheperd(dstIA, req)
+	f.shepherd(dstIA, req)
 
 	if res, ok := f.cache.ListReservations(ctx, dstIA); ok {
 		return res, nil
@@ -97,10 +97,10 @@ func (f *defaultFetcher) fetch(ctx context.Context, dstIA addr.IA, dedup *single
 	return response, err
 }
 
-// sheperd will take care of the listing for this destination, for a period of time.
+// shepherd will take care of the listing for this destination, for a period of time.
 // It checks in the cache the existence of the listing or creates it. It keeps updating it for
 // a while, specified by waitDuration and maxUpdateDuration.
-func (f *defaultFetcher) sheperd(dstIA addr.IA, req *sdpb.ColibriListRsvsRequest) {
+func (f *defaultFetcher) shepherd(dstIA addr.IA, req *sdpb.ColibriListRsvsRequest) {
 	e, found := f.cache.FindOrCreate(dstIA)
 	if found {
 		// there exists a possibility of being here without e being actually inside the cache,
@@ -108,7 +108,7 @@ func (f *defaultFetcher) sheperd(dstIA addr.IA, req *sdpb.ColibriListRsvsRequest
 		e.added = time.Now()
 		return
 	}
-	// `e` has been newly created in the cache. Populate and shepperd it
+	// `e` has been newly created in the cache. Populate and shepherd it
 	e.added = time.Now()
 	go func() {
 		defer log.HandlePanic()
