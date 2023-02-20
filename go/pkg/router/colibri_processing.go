@@ -136,8 +136,8 @@ func (c *colibriPacketProcessor) basicValidation() (processResult, error) {
 
 	// Check if destined to local AS: egress is 0, dst is local, no more hosts must be equal
 	isLocal := c.egressInterface() == 0
-	if !((isLocal == c.colibriPathMinimal.IsLastHop()) &&
-		(isLocal == c.scionLayer.DstIA.Equal(c.d.localIA))) {
+	if (isLocal != c.colibriPathMinimal.IsLastHop()) ||
+		(isLocal != c.scionLayer.DstIA.Equal(c.d.localIA)) {
 
 		return processResult{}, serrors.New("inconsistent packet", "egress_id", c.egressInterface(),
 			"is_last_hop", c.colibriPathMinimal.IsLastHop(), "dst", c.scionLayer.DstIA,

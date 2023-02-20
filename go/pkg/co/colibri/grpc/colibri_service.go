@@ -453,7 +453,7 @@ func colAddrFromCtx(ctx context.Context) (*caddr.Colibri, error) {
 
 	peer, ok := gPeer.Addr.(*snet.UDPAddr)
 	if !ok {
-		logger.Debug("peer must be *snet.UDPAddr", "actual", fmt.Sprintf("%T", gPeer))
+		logger.Debug("peer must be *snet.UDPAddr", "actual", fmt.Sprintf("%T", gPeer.Addr))
 		return nil, serrors.New(
 			"peer must be *snet.UDPAddr",
 			"actual",

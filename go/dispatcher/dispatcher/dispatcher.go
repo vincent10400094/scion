@@ -36,13 +36,13 @@ const ReceiveBufferSize = 1 << 20
 type Server struct {
 	// routingTable is used to register new connections.
 	routingTable *IATable
-	ipv4Conn     net.PacketConn
-	ipv6Conn     net.PacketConn
+	ipv4Conn     conn.ExtendedPacketConn
+	ipv6Conn     conn.ExtendedPacketConn
 }
 
 // NewServer creates new instance of Server. Internally, it opens the dispatcher ports
 // for both IPv4 and IPv6. Returns error if the ports can't be opened.
-func NewServer(address string, ipv4Conn, ipv6Conn net.PacketConn) (*Server, error) {
+func NewServer(address string, ipv4Conn, ipv6Conn conn.ExtendedPacketConn) (*Server, error) {
 	if ipv4Conn == nil {
 		var err error
 		ipv4Conn, err = openConn("udp4", address)
@@ -195,7 +195,7 @@ func (ac *Conn) SetWriteDeadline(t time.Time) error {
 //
 // Note that Go-style dual-stacked IPv4/IPv6 connections are not supported. If
 // network is udp, it will be treated as udp4.
-func openConn(network, address string) (net.PacketConn, error) {
+func openConn(network, address string) (conn.ExtendedPacketConn, error) {
 	// We cannot allow the Go standard library to open both types of sockets
 	// because the socket options are specific to only one socket type, so we
 	// degrade udp to only udp4.
@@ -218,7 +218,7 @@ func openConn(network, address string) (net.PacketConn, error) {
 		return nil, serrors.WrapStr("unable to open conn", err)
 	}
 
-	return &underlayConnWrapper{Conn: c}, nil
+	return conn.PacketConn(c), nil
 }
 
 // registerIfSCMPInfo registers the ID of the SCMP request if it is an echo or
@@ -237,43 +237,4 @@ func registerIfSCMPInfo(ref registration.RegReference, pkt *respool.Packet) erro
 	}
 	// FIXME(roosd): add metrics again.
 	return ref.RegisterID(uint64(id))
-}
-
-// underlayConnWrapper wraps a specialized underlay conn into a net.PacketConn
-// implementation. Only *net.UDPAddr addressing is supported.
-type underlayConnWrapper struct {
-	// Conn is the wrapped underlay connection object.
-	conn.Conn
-}
-
-func (o *underlayConnWrapper) ReadFrom(p []byte) (int, net.Addr, error) {
-	return o.Conn.ReadFrom(p)
-}
-
-func (o *underlayConnWrapper) WriteTo(p []byte, a net.Addr) (int, error) {
-	udpAddr, ok := a.(*net.UDPAddr)
-	if !ok {
-		return 0, serrors.New("address is not UDP", "addr", a)
-	}
-	return o.Conn.WriteTo(p, udpAddr)
-}
-
-func (o *underlayConnWrapper) Close() error {
-	return o.Conn.Close()
-}
-
-func (o *underlayConnWrapper) LocalAddr() net.Addr {
-	return o.Conn.LocalAddr()
-}
-
-func (o *underlayConnWrapper) SetDeadline(t time.Time) error {
-	return o.Conn.SetDeadline(t)
-}
-
-func (o *underlayConnWrapper) SetReadDeadline(t time.Time) error {
-	return o.Conn.SetReadDeadline(t)
-}
-
-func (o *underlayConnWrapper) SetWriteDeadline(t time.Time) error {
-	return o.Conn.SetWriteDeadline(t)
 }

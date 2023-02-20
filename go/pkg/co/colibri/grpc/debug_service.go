@@ -21,6 +21,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
+	base "github.com/scionproto/scion/go/co/reservation"
 	"github.com/scionproto/scion/go/co/reservation/segment"
 	"github.com/scionproto/scion/go/co/reservation/translate"
 	"github.com/scionproto/scion/go/co/reservationstorage"
@@ -28,30 +29,219 @@ import (
 	"github.com/scionproto/scion/go/lib/addr"
 	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/colibri/coliquic"
+	libcol "github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/topology"
-	"github.com/scionproto/scion/go/lib/util"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 )
 
-type DebugService struct {
+const newIndexMinDuration = 20 * time.Minute
+
+type debugService struct {
+	now      func() time.Time
 	DB       backend.DB
 	Operator *coliquic.ServiceClientOperator
 	Topo     *topology.Loader
 	Store    reservationstorage.Store
 }
 
-var _ colpb.ColibriDebugCommandsServiceServer = (*DebugService)(nil)
-var _ colpb.ColibriDebugServiceServer = (*DebugService)(nil)
+var _ colpb.ColibriDebugCommandsServiceServer = (*debugService)(nil)
+var _ colpb.ColibriDebugServiceServer = (*debugService)(nil)
 
-func (s *DebugService) CmdTraceroute(ctx context.Context, req *colpb.CmdTracerouteRequest,
+func NewDebugService(db backend.DB, operator *coliquic.ServiceClientOperator,
+	topo *topology.Loader, store reservationstorage.Store) *debugService {
+	return &debugService{
+		now:      time.Now,
+		DB:       db,
+		Operator: operator,
+		Topo:     topo,
+		Store:    store,
+	}
+}
+
+func (s *debugService) CmdTraceroute(ctx context.Context, req *colpb.CmdTracerouteRequest,
 ) (*colpb.CmdTracerouteResponse, error) {
+
+	localIA := s.Topo.IA()
+	errF := func(err error) (*colpb.CmdTracerouteResponse, error) {
+		return &colpb.CmdTracerouteResponse{
+			ErrorFound: &colpb.ErrorInIA{
+				Ia:      uint64(localIA),
+				Message: err.Error(),
+			},
+		}, nil
+	}
+	rsv, err := s.getSegR(ctx, req.Id)
+	if err != nil {
+		return errF(err)
+	}
+	log.Debug("deleteme",
+		"path_type", rsv.PathType,
+		"current_step", rsv.CurrentStep,
+		"steps", rsv.Steps,
+	)
+	if rsv.CurrentStep != 0 {
+		return errF(status.Errorf(codes.Internal,
+			"reservation does not start here. Src IA: %s, this AS is at step %d",
+			rsv.Steps.SrcIA(), rsv.CurrentStep))
+	}
 
 	res, err := s.Traceroute(ctx, (*colpb.TracerouteRequest)(req))
 	return (*colpb.CmdTracerouteResponse)(res), err
 }
 
-func (s *DebugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequest,
+func (s *debugService) CmdIndexNew(ctx context.Context, req *colpb.CmdIndexNewRequest,
+) (*colpb.CmdIndexNewResponse, error) {
+
+	localIA := s.Topo.IA()
+	errF := func(err error) (*colpb.CmdIndexNewResponse, error) {
+		return &colpb.CmdIndexNewResponse{
+			ErrorFound: &colpb.ErrorInIA{
+				Ia:      uint64(localIA),
+				Message: err.Error(),
+			},
+		}, nil
+	}
+
+	rsv, err := s.getSegR(ctx, req.Id)
+	if err != nil {
+		return errF(err)
+	}
+
+	// find out current values, or use defaults
+	var min, max libcol.BWCls
+
+	idx := rsv.ActiveIndex()
+	switch {
+	case idx == nil && len(rsv.Indices) > 0:
+		idx = &rsv.Indices[0]
+		fallthrough
+	case idx != nil:
+		min, max = idx.MinBW, idx.MaxBW
+	default:
+		min, max = 2, 2
+	}
+
+	// prepare renewal request and initiate via store
+	now := s.now()
+	renewReq := &segment.SetupReq{
+		Request: *base.NewRequest(now, translate.ID(req.Id), rsv.NextIndexToRenew(),
+			len(rsv.Steps)),
+		ExpirationTime: now.Add(newIndexMinDuration),
+		PathType:       rsv.PathType,
+		MinBW:          min,
+		MaxBW:          max,
+		SplitCls:       rsv.TrafficSplit,
+		PathProps:      rsv.PathEndProps,
+		AllocTrail:     libcol.AllocationBeads{},
+		Steps:          rsv.Steps.Copy(),
+		CurrentStep:    rsv.CurrentStep,
+		TransportPath:  rsv.TransportPath,
+		Reservation:    rsv,
+	}
+	err = s.Store.InitSegmentReservation(ctx, renewReq)
+	if err != nil {
+		return errF(err)
+	}
+	// reload the reservation
+	rsv = renewReq.Reservation
+
+	// confirm index
+	if err := rsv.SetIndexConfirmed(renewReq.Index); err != nil {
+		return errF(err)
+	}
+	confirmReq := base.NewRequest(s.now(), &renewReq.ID, renewReq.Index, len(renewReq.Steps))
+	steps := renewReq.Steps
+	if renewReq.PathType == libcol.DownPath {
+		steps = steps.Reverse()
+	}
+	res, err := s.Store.InitConfirmSegmentReservation(ctx, confirmReq, steps, renewReq.Transport())
+	if err != nil {
+		return errF(status.Errorf(codes.Internal,
+			"confirming index: %v", err))
+	}
+	if !res.Success() {
+		return errF(status.Errorf(codes.Internal,
+			"failed response: %s", res.(*base.ResponseFailure).Message))
+	}
+
+	// successful renewal and confirmation
+	return &colpb.CmdIndexNewResponse{
+		Index: uint32(renewReq.Index),
+	}, nil
+}
+
+func (s *debugService) CmdIndexActivate(ctx context.Context, req *colpb.CmdIndexActivateRequest,
+) (*colpb.CmdIndexActivateResponse, error) {
+
+	localIA := s.Topo.IA()
+	errF := func(err error) (*colpb.CmdIndexActivateResponse, error) {
+		return &colpb.CmdIndexActivateResponse{
+			ErrorFound: &colpb.ErrorInIA{
+				Ia:      uint64(localIA),
+				Message: err.Error(),
+			},
+		}, nil
+	}
+
+	rsv, err := s.getSegR(ctx, req.Id)
+	if err != nil {
+		return errF(err)
+	}
+	if req.Index > 15 {
+		return errF(status.Errorf(codes.Internal,
+			"bad index number %d, not between 0 and 15", req.Index))
+	}
+
+	activateReq := base.NewRequest(s.now(), &rsv.ID, libcol.IndexNumber(req.Index), len(rsv.Steps))
+	res, err := s.Store.InitActivateSegmentReservation(ctx, activateReq, rsv.Steps, rsv.Transport())
+	if err != nil {
+		return errF(status.Errorf(codes.Internal,
+			"activating index: %v", err))
+	}
+	if !res.Success() {
+		return errF(status.Errorf(codes.Internal,
+			"failed response: %s", res.(*base.ResponseFailure).Message))
+	}
+	return &colpb.CmdIndexActivateResponse{}, nil
+}
+
+func (s *debugService) CmdIndexCleanup(ctx context.Context, req *colpb.CmdIndexCleanupRequest,
+) (*colpb.CmdIndexCleanupResponse, error) {
+
+	localIA := s.Topo.IA()
+	errF := func(err error) (*colpb.CmdIndexCleanupResponse, error) {
+		return &colpb.CmdIndexCleanupResponse{
+			ErrorFound: &colpb.ErrorInIA{
+				Ia:      uint64(localIA),
+				Message: err.Error(),
+			},
+		}, nil
+	}
+
+	rsv, err := s.getSegR(ctx, req.Id)
+	if err != nil {
+		return errF(err)
+	}
+	if req.Index > 15 {
+		return errF(status.Errorf(codes.Internal,
+			"bad index number %d, not between 0 and 15", req.Index))
+	}
+
+	cleanupReq := base.NewRequest(s.now(), &rsv.ID, libcol.IndexNumber(req.Index), len(rsv.Steps))
+	res, err := s.Store.InitCleanupSegmentReservation(ctx, cleanupReq, rsv.Steps, rsv.Transport())
+	if err != nil {
+		return errF(status.Errorf(codes.Internal,
+			"cleaning index: %v", err))
+	}
+	if !res.Success() {
+		return errF(status.Errorf(codes.Internal,
+			"failed response: %s", res.(*base.ResponseFailure).Message))
+	}
+	return &colpb.CmdIndexCleanupResponse{}, nil
+}
+
+func (s *debugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequest,
 ) (*colpb.TracerouteResponse, error) {
 
 	localIA := s.Topo.IA()
@@ -64,19 +254,19 @@ func (s *DebugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 			},
 		}, nil
 	}
-	segR, err := s.getSegR(ctx, req.Id)
+	rsv, err := s.getSegR(ctx, req.Id)
 	if err != nil {
 		return errF(err)
 	}
 
 	var colAddr *caddr.Colibri
 	if req.UseColibri {
-		if segR.CurrentStep == 0 {
+		if rsv.CurrentStep == 0 {
 			// since this is the source of the traffic, retrieve the colibri transport path here
-			if segR.TransportPath != nil {
+			if rsv.TransportPath != nil {
 				colAddr = &caddr.Colibri{
-					Path: *segR.TransportPath,
-					Src:  *caddr.NewEndpointWithAddr(segR.Steps.SrcIA(), addr.SvcCOL.Base()),
+					Path: *rsv.TransportPath,
+					Src:  *caddr.NewEndpointWithAddr(rsv.Steps.SrcIA(), addr.SvcCOL.Base()),
 				}
 			}
 		} else {
@@ -85,34 +275,24 @@ func (s *DebugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 				return errF(status.Errorf(codes.Internal,
 					"error retrieving path at transit: %s", err))
 			}
-			log.Debug("deleteme got a colibri transport from the network",
-				"SRC", colAddr.Src,
-				"DST", colAddr.Dst,
-				"PATH", colAddr.Path,
-			)
 		}
 		if colAddr == nil {
 			return errF(status.Errorf(codes.FailedPrecondition, "there is no colibri transport"))
 		}
-		// complete the destination address with the destination stored in the reservation
-		colAddr.Dst = *caddr.NewEndpointWithAddr(segR.Steps.DstIA(), addr.SvcCOL.Base())
-
-		// deleteme
-		log.Debug("debug service info about the colibri transport path",
+		log.Debug("deleteme got a colibri transport from the network",
 			"SRC", colAddr.Src,
 			"DST", colAddr.Dst,
-			"S", colAddr.Path.InfoField.S,
-			"C", colAddr.Path.InfoField.C,
-			"R", colAddr.Path.InfoField.R,
-			"expiration", util.SecsToTime(colAddr.Path.InfoField.ExpTick),
-			"curr_hopfield", colAddr.Path.InfoField.CurrHF,
-			"idx", colAddr.Path.InfoField.Ver,
-			"bwcls", colAddr.Path.InfoField.BwCls,
+			"PATH", colAddr.Path,
 		)
+		// complete the destination address with the destination stored in the reservation
+		colAddr.Dst = *caddr.NewEndpointWithAddr(rsv.Steps.DstIA(), addr.SvcCOL.Base())
+
+		// deleteme
+		log.Debug("debug service info about the colibri transport path", "", colAddr.String())
 	}
 
 	res := &colpb.TracerouteResponse{}
-	if segR.Egress() != 0 { // destination not reached yet, forward to next debug service
+	if rsv.Egress() != 0 { // destination not reached yet, forward to next debug service
 		// TODO(juagargi) fix this by allowing a parameter.
 		// XXX(juagargi) hacky: reduce the timeout by 100 ms to be able to answer back in
 		// case of next hop timing out. This will work sometimes, when there had been no hop
@@ -121,7 +301,7 @@ func (s *DebugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 		ctx, cancelF := context.WithDeadline(ctx, deadline.Add(-100*time.Millisecond))
 		defer cancelF()
 
-		client, err := s.Operator.DebugClient(ctx, segR.Egress(), colAddr)
+		client, err := s.Operator.DebugClient(ctx, rsv.Egress(), colAddr)
 		if err != nil {
 			return errF(status.Errorf(codes.FailedPrecondition, "error using operator: %s", err))
 		}
@@ -130,7 +310,7 @@ func (s *DebugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 		if err != nil {
 			return errF(status.Errorf(codes.Internal,
 				"error forwarding to next (%s, egress_id = %d) service: %s",
-				s.Operator.Neighbor(segR.Egress()), segR.Egress(), err))
+				s.Operator.Neighbor(rsv.Egress()), rsv.Egress(), err))
 		}
 	}
 
@@ -140,7 +320,7 @@ func (s *DebugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 	return res, nil
 }
 
-func (s *DebugService) getSegR(ctx context.Context, id *colpb.ReservationID,
+func (s *debugService) getSegR(ctx context.Context, id *colpb.ReservationID,
 ) (*segment.Reservation, error) {
 
 	ID := translate.ID(id)

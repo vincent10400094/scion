@@ -24,6 +24,7 @@ import (
 
 	"github.com/scionproto/scion/go/lib/addr"
 	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
+	libcol "github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/infra/infraenv"
 	"github.com/scionproto/scion/go/lib/infra/messenger"
@@ -175,9 +176,20 @@ func (o *ServiceClientOperator) neighborAddrWithTransport(
 	case transport == nil:
 		log.Info("colibri client operator, first segment reservation setup", "egress", egressID)
 	case transport.Path.Type() == colpath.PathType:
-		// prepare remote address with the new path
+		if libcol.Tick(transport.Path.InfoField.ExpTick).ToTime().Before(time.Now()) {
+			// If the active index we have is expired, don't use it
+			break
+		}
+		// prepare remote address with the new colibri path
+		colPath := *transport
+		if transport.Path.InfoField.C {
+			colPath.Dst = *caddr.NewEndpointWithAddr(
+				transport.Dst.IA,
+				addr.SvcCOL.Base(),
+			)
+		}
 		rAddr.Path = snetpath.Colibri{
-			Colibri: *transport,
+			Colibri: colPath,
 		}
 	default:
 		// nothing but colibri or nil is accepted
@@ -190,6 +202,7 @@ func (o *ServiceClientOperator) neighborAddrWithTransport(
 func (o *ServiceClientOperator) colibriClient(ctx context.Context, rAddr *snet.UDPAddr) (
 	colpb.ColibriServiceClient, error) {
 
+	log.Debug("deleteme about to dial at the operator")
 	conn, err := o.gRPCDialer.Dial(ctx, rAddr)
 	if err != nil {
 		log.Info("error dialing a grpc connection", "addr", rAddr, "err", err)

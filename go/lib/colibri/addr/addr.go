@@ -42,7 +42,9 @@ func (c *Colibri) String() string {
 		ASID:   c.Src.IA.AS(),
 		Suffix: c.Path.InfoField.ResIdSuffix,
 	}
-	return fmt.Sprintf("%s -> %s [ID: %s]", c.Src, c.Dst, ID)
+	inf := c.Path.InfoField
+	return fmt.Sprintf("%s -> %s [ID: %s,Idx: %d] (#HFs:%d,CurrHF:%d,S:%vC:%vR%v)",
+		c.Src, c.Dst, ID, inf.Ver, inf.HFCount, inf.CurrHF, inf.S, inf.C, inf.R)
 }
 
 // Endpoint represents one sender or receiver as seen in the SCiON address header.

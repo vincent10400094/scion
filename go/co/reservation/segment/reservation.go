@@ -15,12 +15,12 @@
 package segment
 
 import (
-	"bytes"
 	"fmt"
 	"time"
 
 	base "github.com/scionproto/scion/go/co/reservation"
 	"github.com/scionproto/scion/go/lib/addr"
+	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/serrors"
 	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
@@ -57,6 +57,17 @@ func (r *Reservation) Egress() uint16 {
 	return r.Steps[r.CurrentStep].Egress
 }
 
+func (r *Reservation) Transport() *caddr.Colibri {
+	if r.TransportPath == nil || len(r.Steps) == 0 {
+		return nil
+	}
+	return &caddr.Colibri{
+		Path: *r.TransportPath,
+		Src:  *caddr.NewEndpointWithAddr(r.Steps.SrcIA(), addr.SvcCOL.Base()),
+		Dst:  *caddr.NewEndpointWithAddr(r.Steps.DstIA(), addr.SvcCOL.Base()),
+	}
+}
+
 // DeriveColibriPathAtSource creates the ColibriPathMinimal from the active index in this
 // reservation. If there is no active index, the path is nil. This function is expected
 // to be called by the src of the reservation. Note that the src is not necesarely the
@@ -80,7 +91,7 @@ func (r *Reservation) deriveColibriPath(reverse bool) *colpath.ColibriPathMinima
 		return nil
 	}
 	p := &colpath.ColibriPath{
-		InfoField: r.deriveInfoField(),
+		InfoField: r.deriveInfoField(reverse),
 		HopFields: make([]*colpath.HopField, len(index.Token.HopFields)),
 	}
 	for i, hf := range index.Token.HopFields {
@@ -95,6 +106,13 @@ func (r *Reservation) deriveColibriPath(reverse bool) *colpath.ColibriPathMinima
 			return nil
 		}
 	}
+	// // deleteme
+	// fmt.Println("--------------------------------------------", r.ID.String())
+	// for i, hf := range p.HopFields {
+	// 	fmt.Printf("[%d] in:%d eg:%d\n", i, hf.IngressId, hf.EgressId)
+	// }
+	// fmt.Println("--------------------------------------------")
+	// // deleteme until here
 	min, err := p.ToMinimal()
 	if err != nil {
 		return nil
@@ -321,21 +339,28 @@ func (r *Reservation) addIndex(index *Index) (reservation.IndexNumber, error) {
 
 // deriveInfoField returns a colibri info field filled with the values from this reservation.
 // It returns nil if there is no active index.
-func (r *Reservation) deriveInfoField() *colpath.InfoField {
+func (r *Reservation) deriveInfoField(reverse bool) *colpath.InfoField {
 	index := r.ActiveIndex()
 	if index == nil {
 		return nil
 	}
+	var zeroBytes = [colpath.LenSuffix - reservation.IDSuffixSegLen]byte{}
+	hfCount := uint8(len(index.Token.HopFields))
+	currHF := uint8(0)
+	if reverse {
+		currHF = hfCount - 1 // instead of 0
+	}
 	return &colpath.InfoField{
 		C:       true,
 		S:       true,
+		R:       false,
 		Ver:     uint8(index.Idx),
-		HFCount: uint8(len(index.Token.HopFields)),
+		CurrHF:  currHF,
+		HFCount: hfCount,
 		// the SegR ID and then 8 zeroes:
-		ResIdSuffix: append(append(r.ID.Suffix[:0:0], r.ID.Suffix...),
-			bytes.Repeat([]byte{0}, colpath.LenSuffix-reservation.IDSuffixSegLen)...),
-		ExpTick: uint32(index.Token.ExpirationTick),
-		BwCls:   uint8(index.AllocBW),
-		Rlc:     uint8(index.Token.RLC),
+		ResIdSuffix: append(append(zeroBytes[:0:0], r.ID.Suffix...), zeroBytes[:]...),
+		ExpTick:     uint32(index.Token.ExpirationTick),
+		BwCls:       uint8(index.AllocBW),
+		Rlc:         uint8(index.Token.RLC),
 	}
 }

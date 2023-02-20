@@ -21,11 +21,11 @@ package conn
 
 import (
 	"net"
+	"sync"
 	"syscall"
 	"time"
 
 	"golang.org/x/net/ipv4"
-	"golang.org/x/net/ipv6"
 
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
@@ -39,6 +39,7 @@ type Messages []ipv4.Message
 // Conn describes the API for an underlay socket
 type Conn interface {
 	ReadFrom([]byte) (int, *net.UDPAddr, error)
+	ReadPacket([]byte) (int, *net.UDPAddr, net.IP, error)
 	ReadBatch(Messages) (int, error)
 	Write([]byte) (int, error)
 	WriteTo([]byte, *net.UDPAddr) (int, error)
@@ -53,8 +54,7 @@ type Conn interface {
 
 // Config customizes the behavior of an underlay socket.
 type Config struct {
-	// ReceiveBufferSize is the size of the operating system receive buffer, in
-	// bytes.
+	// ReceiveBufferSize is the size of the operating system receive buffer, in bytes.
 	ReceiveBufferSize int
 }
 
@@ -75,87 +75,13 @@ func New(listen, remote *net.UDPAddr, cfg *Config) (Conn, error) {
 	return newConnUDPIPv6(listen, remote, cfg)
 }
 
-type connUDPIPv4 struct {
-	connUDPBase
-	pconn *ipv4.PacketConn
-}
-
-func newConnUDPIPv4(listen, remote *net.UDPAddr, cfg *Config) (*connUDPIPv4, error) {
-	cc := &connUDPIPv4{}
-	if err := cc.initConnUDP("udp4", listen, remote, cfg); err != nil {
-		return nil, err
-	}
-	cc.pconn = ipv4.NewPacketConn(cc.conn)
-	return cc, nil
-}
-
-// ReadBatch reads up to len(msgs) packets, and stores them in msgs.
-// It returns the number of packets read, and an error if any.
-func (c *connUDPIPv4) ReadBatch(msgs Messages) (int, error) {
-	n, err := c.pconn.ReadBatch(msgs, syscall.MSG_WAITFORONE)
-	return n, err
-}
-
-func (c *connUDPIPv4) WriteBatch(msgs Messages, flags int) (int, error) {
-	return c.pconn.WriteBatch(msgs, flags)
-}
-
-// SetReadDeadline sets the read deadline associated with the endpoint.
-func (c *connUDPIPv4) SetReadDeadline(t time.Time) error {
-	return c.pconn.SetReadDeadline(t)
-}
-
-func (c *connUDPIPv4) SetWriteDeadline(t time.Time) error {
-	return c.pconn.SetWriteDeadline(t)
-}
-
-func (c *connUDPIPv4) SetDeadline(t time.Time) error {
-	return c.pconn.SetDeadline(t)
-}
-
-type connUDPIPv6 struct {
-	connUDPBase
-	pconn *ipv6.PacketConn
-}
-
-func newConnUDPIPv6(listen, remote *net.UDPAddr, cfg *Config) (*connUDPIPv6, error) {
-	cc := &connUDPIPv6{}
-	if err := cc.initConnUDP("udp6", listen, remote, cfg); err != nil {
-		return nil, err
-	}
-	cc.pconn = ipv6.NewPacketConn(cc.conn)
-	return cc, nil
-}
-
-// ReadBatch reads up to len(msgs) packets, and stores them in msgs.
-// It returns the number of packets read, and an error if any.
-func (c *connUDPIPv6) ReadBatch(msgs Messages) (int, error) {
-	n, err := c.pconn.ReadBatch(msgs, syscall.MSG_WAITFORONE)
-	return n, err
-}
-
-func (c *connUDPIPv6) WriteBatch(msgs Messages, flags int) (int, error) {
-	return c.pconn.WriteBatch(msgs, flags)
-}
-
-// SetReadDeadline sets the read deadline associated with the endpoint.
-func (c *connUDPIPv6) SetReadDeadline(t time.Time) error {
-	return c.pconn.SetReadDeadline(t)
-}
-
-func (c *connUDPIPv6) SetWriteDeadline(t time.Time) error {
-	return c.pconn.SetWriteDeadline(t)
-}
-
-func (c *connUDPIPv6) SetDeadline(t time.Time) error {
-	return c.pconn.SetDeadline(t)
-}
-
 type connUDPBase struct {
-	conn   *net.UDPConn
-	Listen *net.UDPAddr
-	Remote *net.UDPAddr
-	closed bool
+	conn           *net.UDPConn
+	Listen         *net.UDPAddr
+	Remote         *net.UDPAddr
+	closed         bool
+	readMu         sync.Mutex
+	ipProtoHandler ipProtoDetails
 }
 
 func (cc *connUDPBase) initConnUDP(network string, laddr, raddr *net.UDPAddr, cfg *Config) error {
@@ -196,10 +122,47 @@ func (cc *connUDPBase) initConnUDP(network string, laddr, raddr *net.UDPAddr, cf
 		log.Info("Receive buffer size smaller than requested",
 			"expected", target, "actual", after/2, "before", before/2)
 	}
+
+	// request the inclusion of the destination IP in the oob data when reading:
+	if err = cc.ipProtoHandler.SetSocketOptions(c); err != nil {
+		return serrors.WrapStr("error setting PKTINFO", err,
+			"listen", laddr, "remote", raddr)
+	}
+
 	cc.conn = c
 	cc.Listen = laddr
 	cc.Remote = raddr
 	return nil
+}
+
+func (c *connUDPBase) ReadPacket(buff []byte) (n int, from *net.UDPAddr, to net.IP, err error) {
+	raw, err := c.conn.SyscallConn()
+	if err != nil {
+		return
+	}
+
+	// capture n and sa in the read method
+	var sa syscall.Sockaddr
+	var oobN int
+	var oob [1024]byte
+	err = raw.Read(func(fd uintptr) (done bool) {
+		c.readMu.Lock()
+		defer c.readMu.Unlock()
+		n, oobN, _, sa, err = syscall.Recvmsg(int(fd), buff, oob[:], 0)
+		return err != syscall.EAGAIN // return false means go again
+	})
+	if err != nil {
+		return
+	}
+
+	from = c.ipProtoHandler.BuildAddress(sa)
+	// now get the destination address from the ancillary data:
+	msgs, err := syscall.ParseSocketControlMessage(oob[:oobN])
+	if err != nil {
+		return 0, nil, nil, err
+	}
+	to, err = c.ipProtoHandler.GetDstAddress(msgs)
+	return
 }
 
 func (c *connUDPBase) ReadFrom(b []byte) (int, *net.UDPAddr, error) {

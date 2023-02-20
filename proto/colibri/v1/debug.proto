@@ -23,8 +23,17 @@ import "proto/colibri/v1/colibri.proto";
 
 
 service ColibriDebugCommandsService {
-    // Start a Traceroute RPC.
+    // Starts a Traceroute RPC.
     rpc CmdTraceroute(CmdTracerouteRequest) returns (CmdTracerouteResponse) {}
+
+    // Initiates a new index and confirmation requests.
+    rpc CmdIndexNew(CmdIndexNewRequest) returns (CmdIndexNewResponse) {}
+
+    // Initiates a new index activation request.
+    rpc CmdIndexActivate(CmdIndexActivateRequest) returns (CmdIndexActivateResponse) {}
+
+    // Initiates a new index cleanup request.
+    rpc CmdIndexCleanup(CmdIndexCleanupRequest) returns (CmdIndexCleanupResponse) {}
 }
 
 // This is the service that listens for calls from another colibri service. For each call
@@ -43,7 +52,6 @@ message CmdTracerouteRequest {
     // always use COLIBRI as transport while performing the traceroute.
     bool use_colibri = 2;
 }
-
 message CmdTracerouteResponse {
     // requested segR for traceroute.
     ReservationID id = 1;
@@ -57,13 +65,49 @@ message CmdTracerouteResponse {
     ErrorInIA error_found = 10;
 }
 
+
+
+message CmdIndexNewRequest {
+    // the ID of the segR.
+    ReservationID id = 1;
+}
+message CmdIndexNewResponse {
+    // if an error exists, the complete Error structure.
+    ErrorInIA error_found = 1;
+    // the index number returned by the creation. From 0 to 15.
+    uint32 index = 2;
+}
+
+message CmdIndexActivateRequest {
+    // the ID of the segR.
+    ReservationID id = 1;
+    // the index number to activate. From 0 to 15.
+    uint32 index = 2;
+}
+message CmdIndexActivateResponse {
+    // if an error exists, the complete Error structure.
+    ErrorInIA error_found = 1;
+}
+
+message CmdIndexCleanupRequest {
+    // the ID of the segR.
+    ReservationID id = 1;
+    // the index number to clean up. From 0 to 15.
+    uint32 index = 2;
+}
+message CmdIndexCleanupResponse {
+    // if an error exists, the complete Error structure.
+    ErrorInIA error_found = 1;
+}
+
+
+
 message TracerouteRequest {
     // the ID of the segR to check. It can also be used as transport (see below).
     ReservationID id = 1;
     // always use COLIBRI as transport while performing the traceroute.
     bool use_colibri = 2;
 }
-
 message TracerouteResponse {
     // requested segR for traceroute.
     ReservationID id = 1;
@@ -76,6 +120,7 @@ message TracerouteResponse {
     // if an error exists, the complete Error structure.
     ErrorInIA error_found = 10;
 }
+
 
 
 message ErrorInIA {

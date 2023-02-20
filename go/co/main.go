@@ -197,12 +197,7 @@ func setupColibri(ctx context.Context, g *errgroup.Group, cleanup *app.Cleanup, 
 	}
 
 	// debug service used both from the command line and as part of the colibri debug services
-	debugService := &colgrpc.DebugService{
-		DB:       db,
-		Operator: operator,
-		Topo:     topo,
-		Store:    colibriStore,
-	}
+	debugService := colgrpc.NewDebugService(db, operator, topo, colibriStore)
 
 	// QUIC (regular API and debug services)
 	quicServer := coliquic.NewGrpcServer(libgrpc.UnaryServerInterceptor())

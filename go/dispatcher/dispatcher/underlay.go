@@ -30,6 +30,7 @@ import (
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/slayers"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
+	"github.com/scionproto/scion/go/lib/underlay/conn"
 )
 
 const (
@@ -46,7 +47,7 @@ const (
 //
 // The rings are used to provide non-blocking IO for the underlay receiver.
 type NetToRingDataplane struct {
-	UnderlayConn net.PacketConn
+	UnderlayConn conn.ExtendedPacketConn
 	RoutingTable *IATable
 }
 
@@ -69,6 +70,12 @@ func (dp *NetToRingDataplane) Run() error {
 			).Inc()
 			continue
 		}
+		// deleteme use the pkt.UnderlayLocal to redirect the packet to the appropriate service
+		// if colibri and C=1
+		log.Debug("                         deleteme local dispatcher",
+			"listening", dp.UnderlayConn.LocalAddr().String(),
+			"local", pkt.UnderlayLocal,
+			"remote", pkt.UnderlayRemote)
 		metrics.M.NetReadPkts(metrics.IncomingPacket{Result: metrics.PacketResultOk}).Inc()
 		dst.Send(dp, pkt)
 	}
@@ -96,14 +103,14 @@ func getDstUDP(pkt *respool.Packet) (Destination, error) {
 	// control packets to the right destination (https://github.com/netsec-ethz/scion/pull/116).
 	// For Colibri control packets, i.e., for packets where the `C`-flag is set, ignore the
 	// destination ISD/AS. Instead, read the ISD/AS from the high-precision timestamp. The
-	// timestamp field was overritten by the ingress border router to contain the current ISD/AS.
+	// timestamp field was overwritten by the ingress border router to contain the current ISD/AS.
 	// This serves the purpose of supporting a single dispatcher for multiple ASes.
 	if pkt.SCION.PathType == colibri.PathType {
 		colPath, ok := pkt.SCION.Path.(*colibri.ColibriPathMinimal)
 		if !ok {
 			return nil, serrors.New("not a colibri path", "path", pkt.SCION.Path)
 		}
-		if colPath.InfoField.C == true {
+		if colPath.InfoField.C {
 			dstIA = addr.IA(binary.BigEndian.Uint64(colPath.PacketTimestamp[:]))
 		}
 	}

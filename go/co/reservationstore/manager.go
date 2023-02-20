@@ -103,12 +103,17 @@ func (m *manager) Run(ctx context.Context) {
 		table = append(table, fmt.Sprintf("%24s %4s %15s %4s %4s %20s %11s %s",
 			"id", "dir", "dst", "|i|", "act", "exp", "rawpath_type", "path"))
 		for _, r := range rsvs {
+			var idx int = -1
+			if active := r.ActiveIndex(); active != nil {
+				idx = int(active.Idx)
+			}
 			table = append(table, fmt.Sprintf("%24s %4s %15s %4d %4d %20s %11s %s",
 				r.ID.String(),
 				r.PathType,
 				r.Steps.DstIA(),
 				r.Indices.Len(),
-				len(r.Indices.Filter(segment.NotActive())),
+				// len(r.Indices.Filter(segment.NotActive())),
+				idx,
 				r.Indices.NewestExp().Format(time.Stamp),
 				r.TransportPath.Type(),
 				r.Steps))
@@ -242,19 +247,19 @@ func (m *manager) SetupRequest(ctx context.Context, req *segment.SetupReq) error
 	if err != nil {
 		return err
 	}
+
 	// confirm new index
-	confirmReq := base.NewRequest(m.now(), &req.Reservation.ID, req.Index, len(req.Steps))
 	if err = req.Reservation.SetIndexConfirmed(req.Index); err != nil {
 		return err
 	}
+	confirmReq := base.NewRequest(m.now(), &req.Reservation.ID, req.Index, len(req.Steps))
 	// because the store expects the steps[0] to always be the initiator (even for down-path
 	// SegRs), we need to reverse the steps and path if the SegR is of down-path type
 	steps := req.Steps
-
-	transport := req.Transport()
 	if req.PathType == reservation.DownPath {
 		steps = steps.Reverse()
 	}
+	transport := req.Transport()
 	res, err := m.store.InitConfirmSegmentReservation(ctx, confirmReq, steps, transport)
 
 	if err != nil || !res.Success() {

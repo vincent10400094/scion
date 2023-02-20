@@ -23,6 +23,7 @@ import (
 	"github.com/scionproto/scion/go/dispatcher/internal/metrics"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/slayers"
+	"github.com/scionproto/scion/go/lib/underlay/conn"
 )
 
 var packetPool = sync.Pool{
@@ -42,6 +43,7 @@ func GetPacket() *Packet {
 // packets, and readers should take care never to mutate data.
 type Packet struct {
 	UnderlayRemote *net.UDPAddr
+	UnderlayLocal  net.IP
 
 	SCION slayers.SCION
 	UDP   slayers.UDP
@@ -121,8 +123,8 @@ func (pkt *Packet) Free() {
 	}
 }
 
-func (pkt *Packet) DecodeFromConn(conn net.PacketConn) error {
-	n, readExtra, err := conn.ReadFrom(pkt.buffer)
+func (pkt *Packet) DecodeFromConn(conn conn.ExtendedPacketConn) error {
+	n, readExtra, dstIP, err := conn.ReadPacket(pkt.buffer)
 	if err != nil {
 		return err
 	}
@@ -130,6 +132,7 @@ func (pkt *Packet) DecodeFromConn(conn net.PacketConn) error {
 	metrics.M.NetReadBytes().Add(float64(n))
 
 	pkt.UnderlayRemote = readExtra.(*net.UDPAddr)
+	pkt.UnderlayLocal = dstIP
 	if err := pkt.decodeBuffer(); err != nil {
 		metrics.M.NetReadPkts(
 			metrics.IncomingPacket{
