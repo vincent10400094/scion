@@ -41,10 +41,12 @@ import (
 	"github.com/scionproto/scion/go/lib/slayers"
 	"github.com/scionproto/scion/go/lib/slayers/path"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
+	caddr "github.com/scionproto/scion/go/lib/slayers/path/colibri/addr"
 	"github.com/scionproto/scion/go/lib/slayers/path/empty"
 	"github.com/scionproto/scion/go/lib/slayers/path/epic"
 	"github.com/scionproto/scion/go/lib/slayers/path/onehop"
 	"github.com/scionproto/scion/go/lib/slayers/path/scion"
+	sheader "github.com/scionproto/scion/go/lib/slayers/scion"
 	"github.com/scionproto/scion/go/lib/topology"
 	underlayconn "github.com/scionproto/scion/go/lib/underlay/conn"
 	"github.com/scionproto/scion/go/lib/util"
@@ -272,7 +274,9 @@ func TestDataPlaneRun(t *testing.T) {
 
 				postInternalBFD := func(id layers.BFDDiscriminator, src *net.UDPAddr) []byte {
 					scn := &slayers.SCION{
-						NextHdr:  common.L4BFD,
+						Header: sheader.Header{
+							NextHdr: common.L4BFD,
+						},
 						PathType: empty.PathType,
 						Path:     &empty.Path{},
 					}
@@ -460,7 +464,9 @@ func TestDataPlaneRun(t *testing.T) {
 
 				postExternalBFD := func(id layers.BFDDiscriminator, fromIfID uint16) []byte {
 					scn := &slayers.SCION{
-						NextHdr:  common.L4BFD,
+						Header: sheader.Header{
+							NextHdr: common.L4BFD,
+						},
 						PathType: onehop.PathType,
 						Path: &onehop.Path{
 							FirstHop: path.HopField{ConsEgress: fromIfID},
@@ -1182,6 +1188,7 @@ func TestProcessPkt(t *testing.T) {
 			t.Parallel()
 			dp := tc.prepareDP(ctrl)
 			input, want := tc.mockMsg(false), tc.mockMsg(true)
+			fmt.Println("deleteme " + name)
 			result, err := dp.ProcessPkt(tc.srcInterface, input)
 			tc.assertFunc(t, err)
 			if err != nil {
@@ -1219,10 +1226,10 @@ func TestProcessColibriPkt(t *testing.T) {
 			prepareDP: func(ctrl *gomock.Controller) *router.DataPlane {
 				return router.NewDP(
 					map[uint16]router.BatchConn{
-						uint16(1): mock_router.NewMockBatchConn(ctrl),
+						uint16(2): mock_router.NewMockBatchConn(ctrl),
 					},
 					map[uint16]topology.LinkType{
-						1: topology.Child,
+						2: topology.Child,
 					},
 					nil, nil, nil, xtest.MustParseIA("1-ff00:0:110"), nil, keyBytes)
 			},
@@ -1315,6 +1322,7 @@ func TestProcessColibriPkt(t *testing.T) {
 				dst := &net.IPAddr{IP: net.ParseIP("10.0.0.3").To4()}
 				spkt.SetDstAddr(dst)
 				spkt.DstIA = xtest.MustParseIA("1-ff00:0:110")
+				cpath.Dst.IA = spkt.DstIA
 
 				cpath.HopFields[4].Mac = computeColibriMac(t, key, cpath, spkt, 4,
 					cpath.PacketTimestamp)
@@ -1431,7 +1439,10 @@ func TestProcessColibriPkt(t *testing.T) {
 					xtest.MustParseIA("1-ff00:0:110"))
 				dst := &net.IPAddr{IP: net.ParseIP("10.0.0.3").To4()}
 				spkt.SetSrcAddr(dst)
+				cpath.Src = caddr.NewEndpointWithAddr(spkt.DstIA, dst)
+
 				spkt.SrcIA = xtest.MustParseIA("1-ff00:0:110")
+				cpath.Src.IA = spkt.SrcIA
 				cpath.HopFields[0].Mac = computeColibriMac(t, key, cpath, spkt, 0,
 					cpath.PacketTimestamp)
 				reverse(t, spkt, cpath)
@@ -1443,17 +1454,17 @@ func TestProcessColibriPkt(t *testing.T) {
 				}
 				return ret
 			},
-			srcInterface: 1,
+			srcInterface: 2,
 			assertFunc:   assert.NoError,
 		},
 		"controlplane_first_AS_outbound": {
 			prepareDP: func(ctrl *gomock.Controller) *router.DataPlane {
 				return router.NewDP(
 					map[uint16]router.BatchConn{
-						uint16(1): mock_router.NewMockBatchConn(ctrl),
+						uint16(2): mock_router.NewMockBatchConn(ctrl),
 					},
 					map[uint16]topology.LinkType{
-						1: topology.Child,
+						2: topology.Child,
 					},
 					nil, nil, nil, xtest.MustParseIA("1-ff00:0:110"), nil, keyBytes)
 			},
@@ -1720,7 +1731,7 @@ func TestProcessColibriPkt(t *testing.T) {
 				ret.Flags, ret.NN, ret.N, ret.OOB = 0, 0, 0, nil
 				return ret
 			},
-			srcInterface: 1,
+			srcInterface: 2,
 			assertFunc:   assert.NoError,
 		},
 	}
@@ -1775,6 +1786,53 @@ func TestDataPlaneSetColibriKey(t *testing.T) {
 	})
 }
 
+// TestColibriReverseUTFunction ensures that the functions used in this test are consistent with the
+// MAC computation and COLIBRI dataplane protocol when reversing a path.
+// The test is left in place to assert the correct behavior of the rest of the UTs.
+func TestColibriReverseUTFunction(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	keyBytes := []byte("testkey_colibri_")
+	key, err := libcolibri.InitColibriKey(keyBytes)
+	require.NoError(t, err)
+
+	now := time.Now()
+	expTick := uint32(now.Unix()/4) + 3
+	tsRel, err := libcolibri.CreateTsRel(expTick, now)
+	require.NoError(t, err)
+
+	//
+	spkt, cpath := prepColibriBaseMsg(false, false, false, 2, 5, expTick, tsRel,
+		xtest.MustParseIA("1-ff00:0:110"))
+	cpath.HopFields[2].Mac = computeColibriMac(t, key, cpath, spkt, 2,
+		cpath.PacketTimestamp)
+
+	srcInterface := uint16(1)
+
+	dataPlane := router.NewDP(
+		map[uint16]router.BatchConn{
+			uint16(1): mock_router.NewMockBatchConn(ctrl),
+			uint16(2): mock_router.NewMockBatchConn(ctrl),
+		},
+		map[uint16]topology.LinkType{
+			1: topology.Parent,
+			2: topology.Child,
+		},
+		nil, nil, nil, xtest.MustParseIA("1-ff00:0:110"), nil, keyBytes)
+
+	var msg *ipv4.Message
+	msg = toMsg(t, spkt, cpath)
+	_, err = dataPlane.ProcessPkt(srcInterface, msg)
+	require.NoError(t, err) // this passes okay
+
+	reverse(t, spkt, cpath)
+	msg = toMsg(t, spkt, cpath)
+	srcInterface = uint16(2)
+	_, err = dataPlane.ProcessPkt(srcInterface, msg)
+	require.NoError(t, err)
+}
+
 func toMsg(t *testing.T, spkt *slayers.SCION, dpath path.Path) *ipv4.Message {
 	t.Helper()
 	ret := &ipv4.Message{}
@@ -1795,15 +1853,17 @@ func toMsg(t *testing.T, spkt *slayers.SCION, dpath path.Path) *ipv4.Message {
 
 func prepBaseMsg(now time.Time) (*slayers.SCION, *scion.Decoded) {
 	spkt := &slayers.SCION{
-		Version:      0,
-		TrafficClass: 0xb8,
-		FlowID:       0xdead,
-		NextHdr:      common.L4UDP,
-		PathType:     scion.PathType,
-		DstIA:        xtest.MustParseIA("4-ff00:0:411"),
-		SrcIA:        xtest.MustParseIA("2-ff00:0:222"),
-		Path:         &scion.Raw{},
-		PayloadLen:   18,
+		Header: sheader.Header{
+			Version:      0,
+			TrafficClass: 0xb8,
+			FlowID:       0xdead,
+			NextHdr:      common.L4UDP,
+			DstIA:        xtest.MustParseIA("4-ff00:0:411"),
+			SrcIA:        xtest.MustParseIA("2-ff00:0:222"),
+			PayloadLen:   18,
+		},
+		PathType: scion.PathType,
+		Path:     &scion.Raw{},
 	}
 
 	dpath := &scion.Decoded{
@@ -1891,14 +1951,16 @@ func prepColibriBaseMsg(c, r, s bool, currHF, hfCount uint8, expTick,
 
 	// SCION common/address header
 	spkt := &slayers.SCION{
-		Version:      0,
-		TrafficClass: 0xb8,
-		FlowID:       0xdead,
-		NextHdr:      common.L4UDP,
-		PathType:     colibri.PathType,
-		DstIA:        xtest.MustParseIA("4-ff00:0:411"),
-		SrcIA:        xtest.MustParseIA("2-ff00:0:222"),
-		Path:         &colibri.ColibriPath{},
+		Header: sheader.Header{
+			Version:      0,
+			TrafficClass: 0xb8,
+			FlowID:       0xdead,
+			NextHdr:      common.L4UDP,
+			SrcIA:        xtest.MustParseIA("2-ff00:0:222"),
+			DstIA:        xtest.MustParseIA("4-ff00:0:411"),
+		},
+		PathType: colibri.PathType,
+		Path:     &colibri.ColibriPath{},
 	}
 	src := &net.IPAddr{IP: net.ParseIP("12.0.0.4").To4()}
 	_ = spkt.SetSrcAddr(src)
@@ -1926,7 +1988,7 @@ func prepColibriBaseMsg(c, r, s bool, currHF, hfCount uint8, expTick,
 	}
 	hfFirst := &colibri.HopField{
 		IngressId: 0,
-		EgressId:  1,
+		EgressId:  2,
 		Mac:       []byte{0xff, 0xff, 0xff, 0xff},
 	}
 	cpath.HopFields = append(cpath.HopFields, hfFirst)
@@ -1944,6 +2006,10 @@ func prepColibriBaseMsg(c, r, s bool, currHF, hfCount uint8, expTick,
 		Mac:       []byte{0xff, 0xff, 0xff, 0xff},
 	}
 	cpath.HopFields = append(cpath.HopFields, hfLast)
+	cpath.Src = caddr.NewEndpointWithRaw(spkt.SrcIA, spkt.RawSrcAddr, spkt.SrcAddrType,
+		spkt.SrcAddrLen)
+	cpath.Dst = caddr.NewEndpointWithRaw(spkt.DstIA, spkt.RawDstAddr, spkt.DstAddrType,
+		spkt.DstAddrLen)
 
 	// XXX(mawyss): The tests need to be adapted to support one single dispatcher serving
 	// multiple ASes. See https://github.com/netsec-ethz/scion/pull/116.
@@ -1957,9 +2023,9 @@ func prepColibriBaseMsg(c, r, s bool, currHF, hfCount uint8, expTick,
 // reverse reverses t scion packet with a colibri path. It changes the src and dst addresses,
 // because when we see a reversed packet, its src and dst addresses are swapped.
 func reverse(t *testing.T, spkt *slayers.SCION, path path.Path) {
+	spkt.DstIA, spkt.SrcIA = spkt.SrcIA, spkt.DstIA
 	spkt.DstAddrType, spkt.SrcAddrType = spkt.SrcAddrType, spkt.DstAddrType
 	spkt.DstAddrLen, spkt.SrcAddrLen = spkt.SrcAddrLen, spkt.DstAddrLen
-	spkt.DstIA, spkt.SrcIA = spkt.SrcIA, spkt.DstIA
 	spkt.RawDstAddr, spkt.RawSrcAddr = spkt.RawSrcAddr, spkt.RawDstAddr
 
 	_, err := path.Reverse()

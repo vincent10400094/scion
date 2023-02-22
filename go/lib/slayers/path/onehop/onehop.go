@@ -18,6 +18,7 @@ import (
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/slayers/path"
 	"github.com/scionproto/scion/go/lib/slayers/path/scion"
+	sheader "github.com/scionproto/scion/go/lib/slayers/scion"
 )
 
 // PathLen is the length of a serialized one hop path in bytes.
@@ -61,6 +62,10 @@ func (o *Path) DecodeFromBytes(data []byte) error {
 	return o.SecondHop.DecodeFromBytes(data[offset : offset+path.HopLen])
 }
 
+func (o *Path) BuildFromHeader(b []byte, sc *sheader.Header) error {
+	return o.DecodeFromBytes(b)
+}
+
 func (o *Path) SerializeTo(b []byte) error {
 	if len(b) < PathLen {
 		return serrors.New("buffer too short for OneHop path", "expected", PathLen, "actual",
@@ -76,6 +81,10 @@ func (o *Path) SerializeTo(b []byte) error {
 	}
 	offset += path.HopLen
 	return o.SecondHop.SerializeTo(b[offset : offset+path.HopLen])
+}
+
+func (o *Path) SyncWithScionHeader(scion *sheader.Header) error {
+	return nil
 }
 
 // ToSCIONDecoded converts the one hop path in to a normal SCION path in the

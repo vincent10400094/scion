@@ -28,6 +28,7 @@ import (
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/slayers"
 	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
+	sheader "github.com/scionproto/scion/go/lib/slayers/scion"
 	"github.com/scionproto/scion/go/lib/xtest"
 )
 
@@ -170,8 +171,7 @@ func TestStaticHVFVerification(t *testing.T) {
 
 	c.InfoField.C = true
 	// Generate MAC
-	privateKeyBytes := []byte("a_random_key_123")
-	privateKey, err := libcolibri.InitColibriKey(privateKeyBytes)
+	privateKey, err := libcolibri.InitColibriKey([]byte("a_random_key_123"))
 	require.NoError(t, err)
 	var mac [4]byte
 	err = libcolibri.MACStatic(mac[:], privateKey, c.InfoField,
@@ -185,12 +185,21 @@ func TestStaticHVFVerification(t *testing.T) {
 	assert.NoError(t, err)
 
 	// Verify MAC with wrong key
-	privateKeyBytes = []byte("a_random_key_456")
-	privateKey, err = libcolibri.InitColibriKey(privateKeyBytes)
+	privateKey, err = libcolibri.InitColibriKey([]byte("a_random_key_456"))
 	require.NoError(t, err)
 	err = libcolibri.VerifyMAC(privateKey, c.PacketTimestamp, c.InfoField,
 		c.HopFields[c.InfoField.CurrHF], s)
 	assert.Error(t, err)
+
+	// Verify MAC with a reversed path
+	privateKey, err = libcolibri.InitColibriKey([]byte("a_random_key_123"))
+	require.NoError(t, err)
+	_, err = c.Reverse()
+	assert.NoError(t, err)
+	s.SrcIA, s.DstIA = s.DstIA, s.SrcIA
+	err = libcolibri.VerifyMAC(privateKey, c.PacketTimestamp, c.InfoField,
+		c.HopFields[c.InfoField.CurrHF], s)
+	assert.NoError(t, err)
 }
 
 func TestPacketHVFVerification(t *testing.T) {
@@ -199,8 +208,7 @@ func TestPacketHVFVerification(t *testing.T) {
 
 	c.InfoField.C = false
 	// Generate MAC
-	privateKeyBytes := []byte("a_random_key_123")
-	privateKey, err := libcolibri.InitColibriKey(privateKeyBytes)
+	privateKey, err := libcolibri.InitColibriKey([]byte("a_random_key_123"))
 	require.NoError(t, err)
 	var mac [4]byte
 	err = libcolibri.MACE2E(mac[:], privateKey, c.InfoField, c.PacketTimestamp,
@@ -215,8 +223,7 @@ func TestPacketHVFVerification(t *testing.T) {
 	// assert.NoError(t, err)
 
 	// Verify MAC with wrong key
-	privateKeyBytes = []byte("a_random_key_456")
-	privateKey, err = libcolibri.InitColibriKey(privateKeyBytes)
+	privateKey, err = libcolibri.InitColibriKey([]byte("a_random_key_456"))
 	require.NoError(t, err)
 	err = libcolibri.VerifyMAC(privateKey, c.PacketTimestamp, c.InfoField,
 		c.HopFields[c.InfoField.CurrHF], s)
@@ -226,18 +233,20 @@ func TestPacketHVFVerification(t *testing.T) {
 
 func createScionCmnAddrHdr() *slayers.SCION {
 	spkt := &slayers.SCION{
-		SrcIA:      xtest.MustParseIA("2-ff00:0:222"),
-		PayloadLen: 120,
+		Header: sheader.Header{
+			SrcIA:      xtest.MustParseIA("2-ff00:0:222"),
+			PayloadLen: 120,
+		},
 	}
 	ip4AddrSrc := &net.IPAddr{IP: net.ParseIP("10.0.0.100")}
 	ip4AddrDst := &net.IPAddr{IP: net.ParseIP("1.2.3.4")}
 	spkt.SetSrcAddr(ip4AddrSrc)
 	spkt.SetDstAddr(ip4AddrDst)
 
-	spkt.DstAddrType = slayers.T4Svc
-	spkt.DstAddrLen = slayers.AddrLen4
-	spkt.SrcAddrType = slayers.T4Svc
-	spkt.SrcAddrLen = slayers.AddrLen4
+	spkt.DstAddrType = sheader.T4Svc
+	spkt.DstAddrLen = sheader.AddrLen4
+	spkt.SrcAddrType = sheader.T4Svc
+	spkt.SrcAddrLen = sheader.AddrLen4
 	return spkt
 }
 

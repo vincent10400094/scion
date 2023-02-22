@@ -30,6 +30,7 @@ import (
 	"github.com/scionproto/scion/go/lib/slayers/path/empty"
 	"github.com/scionproto/scion/go/lib/slayers/path/onehop"
 	"github.com/scionproto/scion/go/lib/slayers/path/scion"
+	sheader "github.com/scionproto/scion/go/lib/slayers/scion"
 	"github.com/scionproto/scion/go/lib/util"
 	"github.com/scionproto/scion/go/lib/xtest"
 )
@@ -52,11 +53,13 @@ func TestSCIONLayerString(t *testing.T) {
 	ia2, err := addr.ParseIA("1-ff00:0:2")
 	assert.NoError(t, err)
 	sc := &slayers.SCION{
-		TrafficClass: 226,
-		FlowID:       12345,
-		NextHdr:      common.L4UDP,
-		DstIA:        ia1,
-		SrcIA:        ia2,
+		Header: sheader.Header{
+			TrafficClass: 226,
+			FlowID:       12345,
+			NextHdr:      common.L4UDP,
+			DstIA:        ia1,
+			SrcIA:        ia2,
+		},
 	}
 	if err := sc.SetDstAddr(&net.IPAddr{IP: net.ParseIP("1.2.3.4").To4()}); err != nil {
 		assert.NoError(t, err)
@@ -94,7 +97,7 @@ func TestSCIONLayerString(t *testing.T) {
 		"empty": {
 			pathType: empty.PathType,
 			path:     empty.Path{},
-			expect:   expectBegin + `PathType=Empty (0) ` + expectMiddle + `Path={}` + expectEnd,
+			expect:   expectBegin + expectMiddle + `PathType=Empty (0) ` + `Path={}` + expectEnd,
 		},
 		"scion": {
 			pathType: scion.PathType,
@@ -125,7 +128,8 @@ func TestSCIONLayerString(t *testing.T) {
 					},
 				},
 			},
-			expect: expectBegin + `PathType=SCION (1) ` + expectMiddle +
+			// expect: expectBegin + `PathType=SCION (1) ` + expectMiddle +
+			expect: expectBegin + expectMiddle + `PathType=SCION (1) ` +
 				`Path={ ` +
 				`PathMeta={` +
 				`CurrInf: 5, ` +
@@ -168,7 +172,7 @@ func TestSCIONLayerString(t *testing.T) {
 					Mac:         [path.MacLen]byte{7, 8, 9, 10, 11, 12},
 				},
 			},
-			expect: expectBegin + `PathType=OneHop (2) ` + expectMiddle +
+			expect: expectBegin + expectMiddle + `PathType=OneHop (2) ` +
 				`Path={ ` +
 				`Info={` +
 				`Peer: false, ` +
@@ -271,99 +275,6 @@ func TestSetAndGetAddr(t *testing.T) {
 	}
 }
 
-func TestPackAddr(t *testing.T) {
-	testCases := map[string]struct {
-		addr      net.Addr
-		addrType  slayers.AddrType
-		addrLen   slayers.AddrLen
-		rawAddr   []byte
-		errorFunc assert.ErrorAssertionFunc
-	}{
-		"pack IPv4": {
-			addr:      ip4Addr,
-			addrType:  slayers.T4Ip,
-			addrLen:   slayers.AddrLen4,
-			rawAddr:   []byte(ip4Addr.IP.To4()),
-			errorFunc: assert.NoError,
-		},
-		"pack IPv6": {
-			addr:      ip6Addr,
-			addrType:  slayers.T16Ip,
-			addrLen:   slayers.AddrLen16,
-			rawAddr:   []byte(ip6Addr.IP),
-			errorFunc: assert.NoError,
-		},
-		"pack SVC": {
-			addr:      svcAddr,
-			addrType:  slayers.T4Svc,
-			addrLen:   slayers.AddrLen4,
-			rawAddr:   svcAddr.PackWithPad(2),
-			errorFunc: assert.NoError,
-		},
-	}
-
-	for name, tc := range testCases {
-		name, tc := name, tc
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			addrLen, addrType, rawAddr, err := slayers.PackAddr(tc.addr)
-			tc.errorFunc(t, err)
-			assert.Equal(t, tc.addrType, addrType)
-			assert.Equal(t, tc.addrLen, addrLen)
-			assert.Equal(t, tc.rawAddr, rawAddr)
-		})
-	}
-}
-
-func TestParseAddr(t *testing.T) {
-	testCases := map[string]struct {
-		addrType  slayers.AddrType
-		addrLen   slayers.AddrLen
-		rawAddr   []byte
-		want      net.Addr
-		errorFunc assert.ErrorAssertionFunc
-	}{
-		"parse IPv4": {
-			addrType:  slayers.T4Ip,
-			addrLen:   slayers.AddrLen4,
-			rawAddr:   []byte(ip4Addr.IP),
-			want:      ip4Addr,
-			errorFunc: assert.NoError,
-		},
-		"parse IPv6": {
-			addrType:  slayers.T16Ip,
-			addrLen:   slayers.AddrLen16,
-			rawAddr:   []byte(ip6Addr.IP),
-			want:      ip6Addr,
-			errorFunc: assert.NoError,
-		},
-		"parse SVC": {
-			addrType:  slayers.T4Svc,
-			addrLen:   slayers.AddrLen4,
-			rawAddr:   svcAddr.PackWithPad(2),
-			want:      svcAddr,
-			errorFunc: assert.NoError,
-		},
-		"parse unknown type": {
-			addrType:  0,
-			addrLen:   slayers.AddrLen8,
-			rawAddr:   []byte{0, 0, 0, 0, 0, 0, 0, 0},
-			want:      nil,
-			errorFunc: assert.Error,
-		},
-	}
-
-	for name, tc := range testCases {
-		name, tc := name, tc
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			got, err := slayers.ParseAddr(tc.addrType, tc.addrLen, tc.rawAddr)
-			tc.errorFunc(t, err)
-			assert.Equal(t, tc.want, got)
-		})
-	}
-}
-
 func BenchmarkDecodePreallocNoParse(b *testing.B) {
 	raw := prepRawPacket(b)
 	s := &slayers.SCION{}
@@ -412,18 +323,20 @@ func BenchmarkSerializeNoReuseBuffer(b *testing.B) {
 func prepPacket(t testing.TB, c common.L4ProtocolType) *slayers.SCION {
 	t.Helper()
 	spkt := &slayers.SCION{
-		Version:      0,
-		TrafficClass: 0xb8,
-		FlowID:       0xdead,
-		NextHdr:      c,
-		PathType:     scion.PathType,
-		DstAddrType:  slayers.T16Ip,
-		DstAddrLen:   slayers.AddrLen16,
-		SrcAddrType:  slayers.T4Ip,
-		SrcAddrLen:   slayers.AddrLen4,
-		DstIA:        xtest.MustParseIA("1-ff00:0:111"),
-		SrcIA:        xtest.MustParseIA("2-ff00:0:222"),
-		Path:         &scion.Raw{},
+		Header: sheader.Header{
+			Version:      0,
+			TrafficClass: 0xb8,
+			FlowID:       0xdead,
+			NextHdr:      c,
+			DstAddrType:  sheader.T16Ip,
+			DstAddrLen:   sheader.AddrLen16,
+			SrcAddrType:  sheader.T4Ip,
+			SrcAddrLen:   sheader.AddrLen4,
+			DstIA:        xtest.MustParseIA("1-ff00:0:111"),
+			SrcIA:        xtest.MustParseIA("2-ff00:0:222"),
+		},
+		PathType: scion.PathType,
+		Path:     &scion.Raw{},
 	}
 	spkt.SetDstAddr(ip6Addr)
 	spkt.SetSrcAddr(ip4Addr)
@@ -449,8 +362,10 @@ func TestSCIONComputeChecksum(t *testing.T) {
 		"IPv4/IPv4": {
 			Header: func(t *testing.T) *slayers.SCION {
 				s := &slayers.SCION{
-					SrcIA: xtest.MustParseIA("1-ff00:0:110"),
-					DstIA: xtest.MustParseIA("1-ff00:0:112"),
+					Header: sheader.Header{
+						SrcIA: xtest.MustParseIA("1-ff00:0:110"),
+						DstIA: xtest.MustParseIA("1-ff00:0:112"),
+					},
 				}
 				err := s.SetSrcAddr(&net.IPAddr{IP: net.ParseIP("174.16.4.1").To4()})
 				require.NoError(t, err)
@@ -465,8 +380,10 @@ func TestSCIONComputeChecksum(t *testing.T) {
 		"IPv4/IPv6": {
 			Header: func(t *testing.T) *slayers.SCION {
 				s := &slayers.SCION{
-					SrcIA: xtest.MustParseIA("1-ff00:0:110"),
-					DstIA: xtest.MustParseIA("1-ff00:0:112"),
+					Header: sheader.Header{
+						SrcIA: xtest.MustParseIA("1-ff00:0:110"),
+						DstIA: xtest.MustParseIA("1-ff00:0:112"),
+					},
 				}
 				err := s.SetSrcAddr(&net.IPAddr{IP: net.ParseIP("174.16.4.1").To4()})
 				require.NoError(t, err)
@@ -481,8 +398,10 @@ func TestSCIONComputeChecksum(t *testing.T) {
 		"IPv4/SVC": {
 			Header: func(t *testing.T) *slayers.SCION {
 				s := &slayers.SCION{
-					SrcIA: xtest.MustParseIA("1-ff00:0:110"),
-					DstIA: xtest.MustParseIA("1-ff00:0:112"),
+					Header: sheader.Header{
+						SrcIA: xtest.MustParseIA("1-ff00:0:110"),
+						DstIA: xtest.MustParseIA("1-ff00:0:112"),
+					},
 				}
 				err := s.SetSrcAddr(&net.IPAddr{IP: net.ParseIP("174.16.4.1").To4()})
 				require.NoError(t, err)

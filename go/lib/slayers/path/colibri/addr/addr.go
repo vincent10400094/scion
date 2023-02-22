@@ -20,39 +20,16 @@ import (
 	"net"
 
 	"github.com/scionproto/scion/go/lib/addr"
-	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/serrors"
-	"github.com/scionproto/scion/go/lib/slayers"
-	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
+	"github.com/scionproto/scion/go/lib/slayers/scion"
 )
-
-// Colibri is a fully specified address for COLIBRI. It requires a source (IA only if SegR),
-// a destination (also IA only if SegR), and a COLIBRI path.
-type Colibri struct {
-	Path colpath.ColibriPathMinimal
-	Src  Endpoint
-	Dst  Endpoint
-}
-
-func (c *Colibri) String() string {
-	if c == nil {
-		return "(nil)"
-	}
-	ID := reservation.ID{
-		ASID:   c.Src.IA.AS(),
-		Suffix: c.Path.InfoField.ResIdSuffix,
-	}
-	inf := c.Path.InfoField
-	return fmt.Sprintf("%s -> %s [ID: %s,Idx: %d] (#HFs:%d,CurrHF:%d,S:%vC:%vR%v)",
-		c.Src, c.Dst, ID, inf.Ver, inf.HFCount, inf.CurrHF, inf.S, inf.C, inf.R)
-}
 
 // Endpoint represents one sender or receiver as seen in the SCiON address header.
 type Endpoint struct {
-	IA       addr.IA          // IA address
-	host     []byte           // host address
-	hostType slayers.AddrType // {0, 1, 2, 3}
-	hostLen  slayers.AddrLen  // host address length, {0, 1, 2, 3} (4, 8, 12, or 16 bytes).
+	IA       addr.IA        // IA address
+	host     []byte         // host address
+	hostType scion.AddrType // {0, 1, 2, 3}
+	hostLen  scion.AddrLen  // host address length, {0, 1, 2, 3} (4, 8, 12, or 16 bytes).
 }
 
 func NewEndpointWithAddr(ia addr.IA, hostAddr net.Addr) *Endpoint {
@@ -61,8 +38,8 @@ func NewEndpointWithAddr(ia addr.IA, hostAddr net.Addr) *Endpoint {
 		return &Endpoint{
 			IA:       ia,
 			host:     addr.PackWithPad(2),
-			hostType: slayers.T4Svc,
-			hostLen:  slayers.AddrLen4,
+			hostType: scion.T4Svc,
+			hostLen:  scion.AddrLen4,
 		}
 	case *net.UDPAddr:
 		return NewEndpointWithIP(ia, addr.IP)
@@ -79,12 +56,12 @@ func NewEndpointWithAddr(ia addr.IA, hostAddr net.Addr) *Endpoint {
 
 func NewEndpointWithIP(ia addr.IA, ip net.IP) *Endpoint {
 	var host []byte
-	var hostType slayers.AddrType
-	var hostLen slayers.AddrLen
+	var hostType scion.AddrType
+	var hostLen scion.AddrLen
 	if ip4 := ip.To4(); ip4 != nil {
-		host, hostType, hostLen = ip4, slayers.T4Ip, slayers.AddrLen4
+		host, hostType, hostLen = ip4, scion.T4Ip, scion.AddrLen4
 	} else {
-		host, hostType, hostLen = ip.To16(), slayers.T16Ip, slayers.AddrLen16
+		host, hostType, hostLen = ip.To16(), scion.T16Ip, scion.AddrLen16
 	}
 
 	return &Endpoint{
@@ -95,8 +72,8 @@ func NewEndpointWithIP(ia addr.IA, ip net.IP) *Endpoint {
 	}
 }
 
-func NewEndpointWithRaw(ia addr.IA, host []byte, hostType slayers.AddrType,
-	hostLen slayers.AddrLen) *Endpoint {
+func NewEndpointWithRaw(ia addr.IA, host []byte, hostType scion.AddrType,
+	hostLen scion.AddrLen) *Endpoint {
 
 	return &Endpoint{
 		IA:       ia,
@@ -113,15 +90,17 @@ func (ep Endpoint) Addr() (addr.IA, net.Addr, error) {
 	return ep.IA, addr, err
 }
 
-func (ep Endpoint) Raw() (
-	ia addr.IA, host []byte, hostType slayers.AddrType, hostLen slayers.AddrLen) {
+func (ep *Endpoint) HostAsRaw() (host []byte, hostType scion.AddrType, hostLen scion.AddrLen) {
 
-	return ep.IA, ep.host, ep.hostType, ep.hostLen
+	if ep == nil {
+		return nil, 0, 0
+	}
+	return ep.host, ep.hostType, ep.hostLen
 }
 
 func (ep Endpoint) String() string {
 	var host string
-	if ep.hostType == slayers.T4Svc {
+	if ep.hostType == scion.T4Svc {
 		h, err := parseAddr(ep.hostType, ep.hostLen, ep.host)
 		if err != nil {
 			host = err.Error()
@@ -134,32 +113,73 @@ func (ep Endpoint) String() string {
 	return fmt.Sprintf("%s,%s", ep.IA, host)
 }
 
+func (ep *Endpoint) Len() uint8 {
+	if ep == nil {
+		return 1
+	}
+	// length itself + IA, host len and type + host address
+	return 1 + 10 + 4*(uint8(ep.hostLen)+1) //  14, 18, 22 or 26 bytes
+}
+
+// SerializeTo serializes the Endpoint to an array of bytes. Format:
+// length_in_bytes 				IA	host_len  	host_type  	host_addr
+// Examples:
+// (empty):      0
+// (IPv4):		14	ff00:0001:0110	0			T4Ip		0x7f000001
+func (ep *Endpoint) SerializeTo(buff []byte) {
+	buff[0] = ep.Len() - 1
+	if ep == nil {
+		return
+	}
+	binary.BigEndian.PutUint64(buff[1:], uint64(ep.IA))
+	buff[9] = byte(ep.hostLen)
+	buff[10] = byte(ep.hostType)
+	copy(buff[11:], ep.host)
+}
+
+func (ep *Endpoint) Clone() *Endpoint {
+	return &Endpoint{
+		IA:       ep.IA,
+		host:     append(ep.host[:0:0], ep.host...),
+		hostType: ep.hostType,
+		hostLen:  ep.hostLen,
+	}
+}
+
+func NewEndpointFromSerialized(buff []byte) *Endpoint {
+	if buff[0] == 0 {
+		return nil
+	}
+	// we could assert that the types are valid (in range) but YOLO (actually there is no
+	// unsanitized input here, all comes from the SCION header).
+	ep := &Endpoint{}
+	ep.IA = addr.IA(binary.BigEndian.Uint64(buff[1:]))
+	ep.hostLen = scion.AddrLen(buff[9])
+	ep.hostType = scion.AddrType(buff[10])
+	ep.host = make([]byte, (ep.hostLen+1)*4)
+	copy(ep.host, buff[11:11+len(ep.host)])
+	return ep
+}
+
 // parseAddr takes a host address, type and length and returns the abstract representation derived
 // from net.Addr. The accepted types are IPv4, IPv6 and addr.HostSVC.
 // The type of net.Addr returned will always be net.IPAddr or addr.HostSVC.
 // parseAddr was copied from slayers.
-func parseAddr(addrType slayers.AddrType, addrLen slayers.AddrLen, raw []byte) (net.Addr, error) {
+func parseAddr(addrType scion.AddrType, addrLen scion.AddrLen, raw []byte) (net.Addr, error) {
 	switch addrLen {
-	case slayers.AddrLen4:
+	case scion.AddrLen4:
 		switch addrType {
-		case slayers.T4Ip:
+		case scion.T4Ip:
 			return &net.IPAddr{IP: net.IP(raw)}, nil
-		case slayers.T4Svc:
+		case scion.T4Svc:
 			return addr.HostSVC(binary.BigEndian.Uint16(raw[:addr.HostLenSVC])), nil
 		}
-	case slayers.AddrLen16:
+	case scion.AddrLen16:
 		switch addrType {
-		case slayers.T16Ip:
+		case scion.T16Ip:
 			return &net.IPAddr{IP: net.IP(raw)}, nil
 		}
 	}
 	return nil, serrors.New("unsupported address type/length combination",
 		"type", addrType, "len", addrLen)
 }
-
-// // assert asserts. deleteme
-// func assert(cond bool, params ...interface{}) {
-// 	if !cond {
-// 		panic("bad assert")
-// 	}
-// }

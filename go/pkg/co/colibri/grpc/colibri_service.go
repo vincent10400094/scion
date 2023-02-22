@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"strconv"
 	"time"
 
 	"google.golang.org/grpc/peer"
@@ -28,7 +29,6 @@ import (
 	"github.com/scionproto/scion/go/co/reservationstorage"
 	"github.com/scionproto/scion/go/lib/addr"
 	"github.com/scionproto/scion/go/lib/colibri"
-	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/common"
 	"github.com/scionproto/scion/go/lib/log"
@@ -55,11 +55,7 @@ func (s *ColibriService) SegmentSetup(ctx context.Context, msg *colpb.SegmentSet
 		log.Info("error setup segment", "err", err)
 		return nil, err
 	}
-	var transportPath *colpath.ColibriPathMinimal
-	if transport != nil {
-		transportPath = &transport.Path
-	}
-	req, err := translate.SetupReq(msg, transportPath)
+	req, err := translate.SetupReq(msg, transport)
 	if err != nil {
 		log.Info("error unmarshalling", "err", err)
 		// should send a message?
@@ -338,20 +334,25 @@ func (s *ColibriService) SetupReservation(ctx context.Context, msg *colpb.SetupR
 		if err != nil {
 			return nil, serrors.WrapStr("decoding token in colibri service", err)
 		}
-		colPath := e2e.DeriveColibriPath(&req.ID, token)
-		egressId := ""
-		if len(colPath.HopFields) > 0 {
-			egressId = fmt.Sprintf("%d", colPath.HopFields[0].EgressId)
+
+		colPath := e2e.DeriveColibriPath(&req.ID, req.Steps.SrcIA(), req.SrcHost,
+			req.Steps.DstIA(), req.DstHost, token)
+
+		egressId := strconv.Itoa(int(colPath.HopFields[0].EgressId))
+
+		min, err := colPath.ToMinimal()
+		if err != nil {
+			return nil, serrors.WrapStr("minimizing a colibri path in colibri service", err)
 		}
-		transportPath := make([]byte, colPath.Len())
-		err = colPath.SerializeTo(transportPath)
+		transportPath, err := base.ColPathToRaw(min)
 		if err != nil {
 			return nil, serrors.WrapStr("serializing a colibri path in colibri service", err)
 		}
-		// nexthop holds the interface id until the daemon resolves it with the topology
+
 		pbMsg.Success = &colpb.SetupReservationResponse_Success{
 			TransportPath: transportPath,
-			NextHop:       egressId,
+			// NextHop holds the interface id until the daemon resolves it with the topology
+			NextHop: egressId,
 		}
 	}
 	return pbMsg, nil
@@ -444,7 +445,7 @@ func checkLocalCaller(ctx context.Context) (*net.TCPAddr, error) {
 // reach the service or nil if the transport path was not colibri.
 // Beware that the destination field of the colibri address is empty, due to the technical
 // limitation of not being able to recover all fields from the scion address layer.
-func colAddrFromCtx(ctx context.Context) (*caddr.Colibri, error) {
+func colAddrFromCtx(ctx context.Context) (*colpath.ColibriPathMinimal, error) {
 	logger := log.FromCtx(ctx)
 	gPeer, ok := peer.FromContext(ctx)
 	if !ok {
@@ -476,12 +477,5 @@ func colAddrFromCtx(ctx context.Context) (*caddr.Colibri, error) {
 
 	// The path in the peer address is already the one from here to the peer.
 	// Because we want it in the other direction, we need to reverse it.
-	colPath, err = colPath.Clone().ReverseAsColibri()
-	if err != nil {
-		return nil, serrors.WrapStr("reversing path", err)
-	}
-	return &caddr.Colibri{
-		Path: *colPath,
-		Src:  *caddr.NewEndpointWithAddr(peer.IA, peer.Host),
-	}, nil
+	return colPath.Clone().ReverseAsColibri()
 }

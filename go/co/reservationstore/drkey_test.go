@@ -30,7 +30,6 @@ import (
 	ct "github.com/scionproto/scion/go/co/reservation/test"
 	"github.com/scionproto/scion/go/lib/addr"
 	libcol "github.com/scionproto/scion/go/lib/colibri"
-	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/daemon/mock_daemon"
 	"github.com/scionproto/scion/go/lib/drkey"
@@ -530,6 +529,7 @@ func TestComputeAndValidateE2ESetupResponse(t *testing.T) {
 		response    e2e.SetupResponse
 		steps       base.PathSteps
 		srcHost     net.IP
+		dstHost     net.IP
 		currentStep int
 		rsvID       *reservation.ID    // success case only
 		token       *reservation.Token // success case only
@@ -544,6 +544,7 @@ func TestComputeAndValidateE2ESetupResponse(t *testing.T) {
 			},
 			steps:   ct.NewSteps(0, "1-ff00:0:111", 1, 1, "1-ff00:0:110", 2, 1, "1-ff00:0:112", 0),
 			srcHost: xtest.MustParseIP(t, "10.1.1.1"),
+			dstHost: xtest.MustParseIP(t, "10.2.2.2"),
 			rsvID:   ct.MustParseID("ff00:0:111", "01234567890123456789abcd"),
 			token: &reservation.Token{
 				InfoField: reservation.InfoField{
@@ -568,6 +569,7 @@ func TestComputeAndValidateE2ESetupResponse(t *testing.T) {
 			},
 			steps:   ct.NewSteps(0, "1-ff00:0:111", 1, 1, "1-ff00:0:110", 2, 1, "1-ff00:0:112", 0),
 			srcHost: xtest.MustParseIP(t, "10.1.1.1"),
+			dstHost: xtest.MustParseIP(t, "10.2.2.2"),
 		},
 		"failure_at_transit": {
 			timestamp: util.SecsToTime(1),
@@ -582,6 +584,7 @@ func TestComputeAndValidateE2ESetupResponse(t *testing.T) {
 			},
 			steps:   ct.NewSteps(0, "1-ff00:0:111", 1, 1, "1-ff00:0:110", 2, 1, "1-ff00:0:112", 0),
 			srcHost: xtest.MustParseIP(t, "10.1.1.1"),
+			dstHost: xtest.MustParseIP(t, "10.2.2.2"),
 		},
 	}
 
@@ -630,7 +633,8 @@ func TestComputeAndValidateE2ESetupResponse(t *testing.T) {
 
 			switch res := tc.response.(type) {
 			case *e2e.SetupResponseSuccess:
-				colibriPath, err := e2e.DeriveColibriPath(tc.rsvID, tc.token).ToMinimal()
+				colibriPath, err := e2e.DeriveColibriPath(tc.rsvID, tc.steps.SrcIA(), tc.srcHost,
+					tc.steps.DstIA(), tc.dstHost, tc.token).ToMinimal()
 				require.NoError(t, err)
 				require.NotNil(t, colibriPath)
 
@@ -638,9 +642,7 @@ func TestComputeAndValidateE2ESetupResponse(t *testing.T) {
 					Authenticators: res.Authenticators,
 					ColibriPath: path.Path{
 						DataplanePath: path.Colibri{
-							Colibri: caddr.Colibri{
-								Path: *colibriPath,
-							},
+							ColibriPathMinimal: *colibriPath,
 						},
 					},
 				}

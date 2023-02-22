@@ -16,6 +16,7 @@ package grpc
 
 import (
 	"context"
+	"encoding/hex"
 	"time"
 
 	"google.golang.org/grpc/codes"
@@ -26,11 +27,10 @@ import (
 	"github.com/scionproto/scion/go/co/reservation/translate"
 	"github.com/scionproto/scion/go/co/reservationstorage"
 	"github.com/scionproto/scion/go/co/reservationstorage/backend"
-	"github.com/scionproto/scion/go/lib/addr"
-	caddr "github.com/scionproto/scion/go/lib/colibri/addr"
 	"github.com/scionproto/scion/go/lib/colibri/coliquic"
 	libcol "github.com/scionproto/scion/go/lib/colibri/reservation"
 	"github.com/scionproto/scion/go/lib/log"
+	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 	"github.com/scionproto/scion/go/lib/topology"
 	colpb "github.com/scionproto/scion/go/pkg/proto/colibri"
 )
@@ -80,10 +80,24 @@ func (s *debugService) CmdTraceroute(ctx context.Context, req *colpb.CmdTracerou
 		"current_step", rsv.CurrentStep,
 		"steps", rsv.Steps,
 	)
-	if rsv.CurrentStep != 0 {
+	if (rsv.CurrentStep != 0 && rsv.PathType != libcol.DownPath) ||
+		(rsv.CurrentStep != len(rsv.Steps)-1 && rsv.PathType == libcol.DownPath) {
+
 		return errF(status.Errorf(codes.Internal,
 			"reservation does not start here. Src IA: %s, this AS is at step %d",
 			rsv.Steps.SrcIA(), rsv.CurrentStep))
+	}
+
+	if rsv.TransportPath != nil {
+		log.Debug("deleteme raw colibri path",
+			"transport", rsv.TransportPath,
+			"serialized", hex.EncodeToString(rsv.TransportPath.Raw),
+		)
+	}
+	if rsv.TransportPath.Src == nil || rsv.TransportPath.Dst == nil {
+		// this should be an assertion instead of a check
+		return errF(status.Errorf(codes.Internal,
+			"reservation transport with empty SRC or DST: %s", rsv.TransportPath.String()))
 	}
 
 	res, err := s.Traceroute(ctx, (*colpb.TracerouteRequest)(req))
@@ -259,40 +273,45 @@ func (s *debugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 		return errF(err)
 	}
 
-	var colAddr *caddr.Colibri
+	// Because the steps were stored in the direction of the traffic, we need to perform a
+	// reversion of them if the segment is a down-path one, as we use it in the reverse direction.
+	// The same applies to source and destination IAs, that also come from the steps.
+	egress := rsv.Egress()
+	if rsv.PathType == libcol.DownPath {
+		egress = rsv.Ingress()
+	}
+	initiator := (rsv.CurrentStep == 0 && rsv.PathType != libcol.DownPath) ||
+		rsv.CurrentStep == len(rsv.Steps)-1 && rsv.PathType == libcol.DownPath
+
+	var transport *colpath.ColibriPathMinimal
 	if req.UseColibri {
-		if rsv.CurrentStep == 0 {
-			// since this is the source of the traffic, retrieve the colibri transport path here
+		if initiator {
+			// retrieve the colibri transport path here (this AS is source or initiator)
 			if rsv.TransportPath != nil {
-				colAddr = &caddr.Colibri{
-					Path: *rsv.TransportPath,
-					Src:  *caddr.NewEndpointWithAddr(rsv.Steps.SrcIA(), addr.SvcCOL.Base()),
-				}
+				transport = rsv.TransportPath
 			}
 		} else {
-			colAddr, err = colAddrFromCtx(ctx)
+			transport, err = colAddrFromCtx(ctx)
 			if err != nil {
 				return errF(status.Errorf(codes.Internal,
 					"error retrieving path at transit: %s", err))
 			}
+			log.Debug("deleteme got a colibri transport from the network",
+				"SRC", transport.Src,
+				"DST", transport.Dst,
+				"PATH", transport,
+			)
 		}
-		if colAddr == nil {
+		if transport == nil {
 			return errF(status.Errorf(codes.FailedPrecondition, "there is no colibri transport"))
 		}
-		log.Debug("deleteme got a colibri transport from the network",
-			"SRC", colAddr.Src,
-			"DST", colAddr.Dst,
-			"PATH", colAddr.Path,
-		)
-		// complete the destination address with the destination stored in the reservation
-		colAddr.Dst = *caddr.NewEndpointWithAddr(rsv.Steps.DstIA(), addr.SvcCOL.Base())
 
 		// deleteme
-		log.Debug("debug service info about the colibri transport path", "", colAddr.String())
+		log.Debug("debug service info about the colibri transport path", "", transport.String())
 	}
 
 	res := &colpb.TracerouteResponse{}
-	if rsv.Egress() != 0 { // destination not reached yet, forward to next debug service
+	if egress != 0 { // destination not reached yet, forward to next debug service
 		// TODO(juagargi) fix this by allowing a parameter.
 		// XXX(juagargi) hacky: reduce the timeout by 100 ms to be able to answer back in
 		// case of next hop timing out. This will work sometimes, when there had been no hop
@@ -301,7 +320,7 @@ func (s *debugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 		ctx, cancelF := context.WithDeadline(ctx, deadline.Add(-100*time.Millisecond))
 		defer cancelF()
 
-		client, err := s.Operator.DebugClient(ctx, rsv.Egress(), colAddr)
+		client, err := s.Operator.DebugClient(ctx, egress, transport)
 		if err != nil {
 			return errF(status.Errorf(codes.FailedPrecondition, "error using operator: %s", err))
 		}
@@ -310,7 +329,7 @@ func (s *debugService) Traceroute(ctx context.Context, req *colpb.TracerouteRequ
 		if err != nil {
 			return errF(status.Errorf(codes.Internal,
 				"error forwarding to next (%s, egress_id = %d) service: %s",
-				s.Operator.Neighbor(rsv.Egress()), rsv.Egress(), err))
+				s.Operator.Neighbor(egress), egress, err))
 		}
 	}
 

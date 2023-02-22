@@ -18,7 +18,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/scionproto/scion/go/lib/slayers"
+	"github.com/scionproto/scion/go/lib/slayers/scion"
 	"github.com/scionproto/scion/go/lib/xtest"
 	"github.com/stretchr/testify/require"
 )
@@ -34,8 +34,8 @@ func TestNewEndpoint(t *testing.T) {
 			addr: xtest.MustParseIPAddr(t, "", "1.1.1.1"),
 			expected: Endpoint{
 				host:     xtest.MustParseIP(t, "1.1.1.1").To4(),
-				hostType: slayers.T4Ip,
-				hostLen:  slayers.AddrLen4,
+				hostType: scion.T4Ip,
+				hostLen:  scion.AddrLen4,
 			},
 		},
 		"ipv6": {
@@ -43,8 +43,8 @@ func TestNewEndpoint(t *testing.T) {
 			addr: xtest.MustParseIPAddr(t, "", "::1"),
 			expected: Endpoint{
 				host:     xtest.MustParseIP(t, "::1").To16(),
-				hostType: slayers.T16Ip,
-				hostLen:  slayers.AddrLen16,
+				hostType: scion.T16Ip,
+				hostLen:  scion.AddrLen16,
 			},
 		},
 		"udpv4": {
@@ -52,8 +52,8 @@ func TestNewEndpoint(t *testing.T) {
 			addr: xtest.MustParseUDPAddr(t, "1.1.1.1:80"),
 			expected: Endpoint{
 				host:     xtest.MustParseIP(t, "1.1.1.1").To4(),
-				hostType: slayers.T4Ip,
-				hostLen:  slayers.AddrLen4,
+				hostType: scion.T4Ip,
+				hostLen:  scion.AddrLen4,
 			},
 		},
 		"udpv6": {
@@ -61,8 +61,8 @@ func TestNewEndpoint(t *testing.T) {
 			addr: xtest.MustParseUDPAddr(t, "[::1]:80"),
 			expected: Endpoint{
 				host:     xtest.MustParseIP(t, "::1").To16(),
-				hostType: slayers.T16Ip,
-				hostLen:  slayers.AddrLen16,
+				hostType: scion.T16Ip,
+				hostLen:  scion.AddrLen16,
 			},
 		},
 	}

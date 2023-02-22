@@ -16,15 +16,18 @@ package router
 
 import (
 	"encoding/binary"
+	"encoding/hex"
+	"fmt"
 	"time"
 
 	"github.com/google/gopacket"
 
 	"github.com/scionproto/scion/go/lib/addr"
 	libcolibri "github.com/scionproto/scion/go/lib/colibri/dataplane"
+	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/slayers"
-	"github.com/scionproto/scion/go/lib/slayers/path/colibri"
+	colpath "github.com/scionproto/scion/go/lib/slayers/path/colibri"
 )
 
 type colibriPacketProcessor struct {
@@ -42,7 +45,7 @@ type colibriPacketProcessor struct {
 	buffer gopacket.SerializeBuffer
 
 	// colibriPathMinimal is the optimized representation of the colibri path type.
-	colibriPathMinimal *colibri.ColibriPathMinimal
+	colibriPathMinimal *colpath.ColibriPathMinimal
 }
 
 func (c *colibriPacketProcessor) process() (processResult, error) {
@@ -69,7 +72,7 @@ func (c *colibriPacketProcessor) process() (processResult, error) {
 
 func (c *colibriPacketProcessor) getPath() (processResult, error) {
 	var ok bool
-	c.colibriPathMinimal, ok = c.scionLayer.Path.(*colibri.ColibriPathMinimal)
+	c.colibriPathMinimal, ok = c.scionLayer.Path.(*colpath.ColibriPathMinimal)
 	if !ok {
 		return processResult{}, serrors.New("getting minimal colibri path information failed")
 	}
@@ -82,23 +85,37 @@ func (c *colibriPacketProcessor) basicValidation() (processResult, error) {
 	S := c.colibriPathMinimal.InfoField.S
 	C := c.colibriPathMinimal.InfoField.C
 
+	buff := make([]byte, c.colibriPathMinimal.Len())
+	if err := c.colibriPathMinimal.SerializeTo(buff); err != nil {
+		panic(err)
+	}
+	full := &colpath.ColibriPath{}
+	if err := full.DecodeFromBytes(buff); err != nil {
+		panic(err)
+	}
+	str := ""
+	for i, hf := range full.HopFields {
+		str += fmt.Sprintf("[%d] in: %d, eg: %d, MAC: %s\n", i, hf.IngressId, hf.EgressId, hex.EncodeToString(hf.Mac))
+	}
+
+	log.Debug("-------- deleteme colibri packet",
+		"path", c.colibriPathMinimal.String(),
+	)
+	fmt.Printf("deleteme hop fields:\n%s\n", str)
+
 	// Consistency of flags: S implies C
 	if S && !C {
 		return processResult{}, serrors.New("invalid flags", "S", S, "R", R, "C", C)
 	}
 	// Correct ingress interface (if we received the packet on the local interface, we do not
 	// need to check the interface in the hop field)
-	if c.ingressID != 0 &&
-		((R && c.ingressID != c.colibriPathMinimal.CurrHopField.EgressId) ||
-			(!R && c.ingressID != c.colibriPathMinimal.CurrHopField.IngressId)) {
-
+	if c.ingressID != 0 && c.ingressID != c.colibriPathMinimal.CurrHopField.IngressId {
 		return processResult{}, serrors.New("invalid ingress identifier",
-			"R", R, "receivedOn", c.ingressID,
-			"HopFieldIngressId", c.colibriPathMinimal.CurrHopField.IngressId,
-			"HopFieldEgressId", c.colibriPathMinimal.CurrHopField.EgressId)
+			"receivedOn", c.ingressID,
+			"HopFieldIngressId", c.colibriPathMinimal.CurrHopField.IngressId)
 	}
 	// Valid packet length
-	if (!R && c.scionLayer.PayloadLen != c.colibriPathMinimal.InfoField.OrigPayLen) ||
+	if (!R && !C && c.scionLayer.PayloadLen != c.colibriPathMinimal.InfoField.OrigPayLen) ||
 		(int(c.scionLayer.PayloadLen) != len(c.scionLayer.Payload)) {
 
 		return processResult{}, serrors.New("packet length validation failed",
@@ -135,12 +152,14 @@ func (c *colibriPacketProcessor) basicValidation() (processResult, error) {
 	}
 
 	// Check if destined to local AS: egress is 0, dst is local, no more hosts must be equal
-	isLocal := c.egressInterface() == 0
+	isLocal := c.colibriPathMinimal.CurrHopField.EgressId == 0
 	if (isLocal != c.colibriPathMinimal.IsLastHop()) ||
 		(isLocal != c.scionLayer.DstIA.Equal(c.d.localIA)) {
 
-		return processResult{}, serrors.New("inconsistent packet", "egress_id", c.egressInterface(),
-			"is_last_hop", c.colibriPathMinimal.IsLastHop(), "dst", c.scionLayer.DstIA,
+		return processResult{}, serrors.New("inconsistent packet",
+			"egress_id", c.colibriPathMinimal.CurrHopField.EgressId,
+			"is_last_hop", c.colibriPathMinimal.IsLastHop(),
+			"dst", c.scionLayer.DstIA,
 			"(local)", c.d.localIA)
 	}
 	return processResult{}, nil
@@ -155,8 +174,15 @@ func (c *colibriPacketProcessor) cryptographicValidation() (processResult, error
 }
 
 func (c *colibriPacketProcessor) forward() (processResult, error) {
-	egressId := c.egressInterface()
+	egressId := c.colibriPathMinimal.CurrHopField.EgressId
 
+	_, deletemeCanForwardLocally := c.canForwardLocally(egressId)
+
+	log.Debug("deleteme colibri packet will be forwarded", "path", c.colibriPathMinimal.String(),
+		"internal_ingress", c.ingressID,
+		"egress", egressId,
+		"canForwardLocally?", deletemeCanForwardLocally,
+	)
 	if c.ingressID == 0 {
 		// Received packet from within AS
 		if conn, ok := c.canForwardLocally(egressId); ok {
@@ -182,14 +208,6 @@ func (c *colibriPacketProcessor) forward() (processResult, error) {
 			}
 			return c.forwardToRemoteEgress(egressId)
 		}
-	}
-}
-
-func (c *colibriPacketProcessor) egressInterface() uint16 {
-	if c.colibriPathMinimal.InfoField.R {
-		return c.colibriPathMinimal.CurrHopField.IngressId
-	} else {
-		return c.colibriPathMinimal.CurrHopField.EgressId
 	}
 }
 
@@ -242,6 +260,7 @@ func (c *colibriPacketProcessor) forwardToColibriSvc() (processResult, error) {
 	if !ok {
 		return processResult{}, serrors.New("no colibri service registered at border router")
 	}
+	log.Debug("deleteme forwarding to SvcCOL", "address", a)
 
 	// XXX(mawyss): This is a temporary solution to allow the dispatcher to forward Colibri
 	// control packets to the right destination (https://github.com/netsec-ethz/scion/pull/116).

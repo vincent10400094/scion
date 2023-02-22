@@ -172,6 +172,8 @@ func (s server) accept(conn *snet.Conn, buffer []byte) error {
 	if !ok {
 		return serrors.New("not a scion address", "addr", from)
 	}
+	log.Debug("deleteme", "type", fmt.Sprintf("%T", fromScion.Path),
+		"path", fromScion.Path)
 
 	data := buffer[:n]
 	if !strings.HasPrefix(string(data), "colibri test") {
@@ -316,8 +318,7 @@ func (c client) run() int {
 	// use the reservation
 	c.Remote.Path = p.Dataplane()
 	c.Remote.NextHop = p.UnderlayNextHop()
-	log.Debug("sending message to server",
-		"steps", steps)
+	log.Debug("sending message to server", "steps", steps)
 	_, err = conn.WriteTo([]byte("colibri test colibri path"), c.Remote)
 	if err != nil {
 		integration.LogFatal("writing data with colibri", "err", err)

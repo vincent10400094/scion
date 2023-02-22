@@ -295,13 +295,13 @@ func TestDeriveColibriPathAtSource(t *testing.T) {
 }
 
 func TestDeriveColibriPathAtDestination(t *testing.T) {
-
 	cases := map[string]struct {
 		SegR *segment.Reservation
 	}{
-		"up": {
+		"down": {
 			SegR: &segment.Reservation{
-				PathType:    reservation.UpPath,
+				PathType: reservation.DownPath,
+				// steps always in the direction of the traffic
 				Steps:       test.NewSteps("1-ff00:0:1", 1, 2, "1-ff00:0:2", 3, 4, "1-ff00:0:3"),
 				CurrentStep: 1,
 				ID:          *test.MustParseID("ff00:0:1", "01234567"),
@@ -330,12 +330,14 @@ func TestDeriveColibriPathAtDestination(t *testing.T) {
 				}},
 			},
 		},
-		"down": {
+		"longlegs": {
 			SegR: &segment.Reservation{
-				PathType:    reservation.DownPath,
-				Steps:       test.NewSteps("1-ff00:0:3", 4, 3, "1-ff00:0:2", 2, 1, "1-ff00:0:1"),
+				PathType: reservation.DownPath, // initiated by 113
+				// steps always in the direction of the traffic
+				Steps: test.NewSteps("1-ff00:0:110", 1, 41, "1-ff00:0:111", 2, 1, "1-ff00:0:113"),
+				//
 				CurrentStep: 1,
-				ID:          *test.MustParseID("ff00:0:1", "01234567"),
+				ID:          *test.MustParseID("ff00:0:113", "01234567"),
 				Indices: segment.Indices{segment.Index{
 					Token: &reservation.Token{
 						InfoField: reservation.InfoField{
@@ -344,15 +346,15 @@ func TestDeriveColibriPathAtDestination(t *testing.T) {
 							ExpirationTick: reservation.TickFromTime(util.SecsToTime(1000)),
 						},
 						HopFields: []reservation.HopField{
-							{
+							{ // 110
 								Ingress: 0,
-								Egress:  4,
+								Egress:  1,
 							},
-							{
-								Ingress: 3,
+							{ // 111
+								Ingress: 41,
 								Egress:  2,
 							},
-							{
+							{ // 113
 								Ingress: 1,
 								Egress:  0,
 							},
@@ -367,10 +369,12 @@ func TestDeriveColibriPathAtDestination(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			colibriKeys := test.InitColibriKeys(t, len(tc.SegR.Steps))
-			srcAS := tc.SegR.Steps.SrcIA().AS()
-			dstAS := tc.SegR.Steps.DstIA().AS()
+			srcAS := tc.SegR.Steps.SrcIA().AS() // e.g. 110 in the "longlegs"
+			dstAS := tc.SegR.Steps.DstIA().AS() // e.g. 113 in the "longlegs"
 			test.TraverseASesAndStampMACs(t, tc.SegR, colibriKeys, srcAS, dstAS)
 			colPath := colibriMinimalToRegular(t, tc.SegR.DeriveColibriPathAtDestination())
+			// Because the SCION layer reverses the src and dst ASes, simulate it here:
+			srcAS, dstAS = dstAS, srcAS
 			test.VerifyMACs(t, colPath, colibriKeys, srcAS, dstAS)
 		})
 	}

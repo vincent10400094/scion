@@ -15,8 +15,15 @@
 package colibri
 
 import (
+	"fmt"
+
+	"github.com/scionproto/scion/go/lib/addr"
+	"github.com/scionproto/scion/go/lib/colibri/reservation"
+	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/serrors"
 	"github.com/scionproto/scion/go/lib/slayers/path"
+	caddr "github.com/scionproto/scion/go/lib/slayers/path/colibri/addr"
+	"github.com/scionproto/scion/go/lib/slayers/scion"
 )
 
 const PathType path.Type = 4
@@ -48,6 +55,28 @@ type ColibriPathMinimal struct {
 	// Raw contains the raw bytes of the COLIBRI path type header. It is set during the execution
 	// of DecodeFromBytes.
 	Raw []byte
+
+	// Source address taken  from the SCION layer
+	Src *caddr.Endpoint
+	// Destination address taken  from the SCION layer
+	Dst *caddr.Endpoint
+}
+
+func (c *ColibriPathMinimal) String() string {
+	if c == nil {
+		return "(nil)"
+	}
+	var as addr.AS
+	if c.Src != nil {
+		as = c.Src.IA.AS()
+	}
+	ID := reservation.ID{
+		ASID:   as,
+		Suffix: c.InfoField.ResIdSuffix,
+	}
+	inf := c.InfoField
+	return fmt.Sprintf("%s -> %s [ID: %s,Idx: %d] (#HFs:%d,CurrHF:%d,S:%v C:%v R:%v)",
+		c.Src, c.Dst, ID, inf.Ver, inf.HFCount, inf.CurrHF, inf.S, inf.C, inf.R)
 }
 
 func (c *ColibriPathMinimal) GetInfoField() *InfoField {
@@ -91,7 +120,16 @@ func (c *ColibriPathMinimal) DecodeFromBytes(b []byte) error {
 		return err
 	}
 	c.Raw = b[:c.Len()]
+	// log.Debug("deleteme decoded colibri path", "path", c)
 	return nil
+}
+
+func (c *ColibriPathMinimal) BuildFromHeader(b []byte, sc *scion.Header) error {
+	c.Src = caddr.NewEndpointWithRaw(sc.SrcIA, sc.RawSrcAddr, sc.SrcAddrType, sc.SrcAddrLen)
+	c.Dst = caddr.NewEndpointWithRaw(sc.DstIA, sc.RawDstAddr, sc.DstAddrType, sc.DstAddrLen)
+	err := c.DecodeFromBytes(b)
+	// log.Debug("deleteme building from header", "path", c)
+	return err
 }
 
 // SerializeToInternal serializes the COLIBRI timestamp and info field to the Raw buffer. No hop
@@ -137,6 +175,65 @@ func (c *ColibriPathMinimal) SerializeTo(b []byte) error {
 	return nil
 }
 
+func (c *ColibriPathMinimal) SyncWithScionHeader(scion *scion.Header) error {
+
+	// log.Debug("deleteme before colibri path sync", "path", c.String())
+
+	if !c.InfoField.R && !c.InfoField.C {
+		// Update the size for the replier to use it in the MAC verification (EER non reply only).
+		// Use the actual size right before putting the packet in the wire.
+		c.InfoField.OrigPayLen = scion.PayloadLen
+	}
+
+	// Update the SCION layer fields (SRC and DST) that must be affected by this colibri path.
+	if c.Src == nil { // deleteme
+		panic("src is nil")
+	}
+	if c.Dst == nil { // deleteme
+		panic("src is nil")
+	}
+
+	// deleteme: we should be able to also set the Src and Dst hosts. But it doesn't work.
+
+	scion.SrcIA = c.Src.IA
+	// TODO(juagargi) a problem in the dispatcher prevents the ACK packets from being dispatched
+	// correctly. For now, we need to keep the IP address of the original sender, which is
+	// each one of the colibri services that contact the next colibri service.
+	// The problem: when the ACK packet is created and sent, if the destination address is
+	// a service, the dispatcher on the receiver of the ACK side won't be able to find the correct
+	// socket (the client one), as it is registered as a no service. It will instead dispatch
+	// the packet to the colibri service listener, which is not expecting this ACK.
+	// For now we just send the packets with the individual address, to allow the ACK to come back.
+	// scion.RawSrcAddr, scion.SrcAddrType, scion.SrcAddrLen = c.Src.HostAsRaw()
+
+	scion.DstIA = c.Dst.IA
+	scion.RawDstAddr, scion.DstAddrType, scion.DstAddrLen = c.Dst.HostAsRaw()
+
+	// log.Debug("deleteme after colibri path sync", "path", c.String())
+
+	return nil
+}
+
+// ToBytes is a serialized representation of the path, including the Src and Dst fields.
+// It encodes the length of the Src field in one byte, then the Src field itself.
+// The same goes for the Dst field. After this, the path is serialized.
+func (c ColibriPathMinimal) ToBytes() ([]byte, error) {
+	sLen := int(c.Src.Len())
+	dLen := int(c.Dst.Len())
+	buff := make([]byte, sLen+dLen+c.Len())
+	c.Src.SerializeTo(buff)
+	c.Dst.SerializeTo(buff[sLen:])
+	return buff, c.SerializeTo(buff[sLen+dLen:])
+}
+
+func (c *ColibriPathMinimal) FromBytes(buff []byte) error {
+	c.Src = caddr.NewEndpointFromSerialized(buff)
+	sLen := int(c.Src.Len())
+	c.Dst = caddr.NewEndpointFromSerialized(buff[sLen:])
+	dLen := int(c.Dst.Len())
+	return c.DecodeFromBytes(buff[sLen+dLen:])
+}
+
 // Reverse reverses the path: the R-flag is toggled and the order of the Hop Fields is inverted.
 // The currHF field is updated to still point to the current hop field.
 // This is reflected in the underlying Raw buffer, as well as the updated Info and Hop Field.
@@ -145,6 +242,7 @@ func (c *ColibriPathMinimal) Reverse() (path.Path, error) {
 	// path first. If this becomes a performance bottleneck, the implementation should be changed to
 	// work directly on the ColibriPathMinimal.Raw buffer.
 
+	// log.Debug("deleteme reversing colibri path", "original", c)
 	if c == nil {
 		return nil, serrors.New("colibri path must not be nil")
 	}
@@ -157,17 +255,12 @@ func (c *ColibriPathMinimal) Reverse() (path.Path, error) {
 		return nil, err
 	}
 
-	reversed, err := colibriPath.Reverse()
+	_, err = colibriPath.Reverse()
 	if err != nil {
 		return nil, err
 	}
-
-	if err := reversed.SerializeTo(c.Raw); err != nil {
-		return nil, err
-	}
-
-	err = c.DecodeFromBytes(c.Raw)
-	return c, err
+	log.Debug("deleteme colibri path is reversed", "reversed", colibriPath)
+	return colibriPath.ToMinimal()
 }
 
 func (c *ColibriPathMinimal) ReverseAsColibri() (*ColibriPathMinimal, error) {
@@ -231,6 +324,8 @@ func (c *ColibriPathMinimal) ToColibriPath() (*ColibriPath, error) {
 	if err := colibriPath.DecodeFromBytes(c.Raw); err != nil {
 		return nil, err
 	}
+	colibriPath.Src = c.Src
+	colibriPath.Dst = c.Dst
 	return colibriPath, nil
 }
 
@@ -240,5 +335,7 @@ func (c *ColibriPathMinimal) Clone() *ColibriPathMinimal {
 		Raw:             append([]byte{}, c.Raw...),
 		InfoField:       c.InfoField.Clone(),
 		CurrHopField:    c.CurrHopField.Clone(),
+		Src:             c.Src.Clone(),
+		Dst:             c.Dst.Clone(),
 	}
 }
