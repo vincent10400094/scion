@@ -16,6 +16,8 @@ package dataplane
 
 import (
 	"encoding/binary"
+	"fmt"
+	"sync"
 	"time"
 )
 
@@ -63,6 +65,7 @@ type encoder struct {
 	// frame is the frame being built at the moment.
 	// To avoid allocations, we reuse the same frame buffer over and over again.
 	frame []byte
+	mutex sync.Mutex
 }
 
 // newEncoder creates a new encoder instance.
@@ -92,6 +95,9 @@ func (e *encoder) Write(pkt []byte) {
 // The function blocks if there are no frames available.
 // When the encoder is closed, the function returns nil.
 func (e *encoder) Read() []byte {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
 	e.frame = e.frame[:hdrLen]
 	// Write the header.
 	e.frame[versionPos] = 0
@@ -109,21 +115,39 @@ func (e *encoder) Read() []byte {
 			return e.frame[:pos]
 		}
 	}
+
 	// Read more packets and fill in as much of the frame as possible.
 	var indexSet bool
 	for {
+		// Frame buffer becomes smaller, and doesn't fit the current frame,
+		// drop the exceeded frame and return the current frame.
+		if pos > cap(e.frame) {
+			fmt.Printf("Drop a frame with size %d\n", pos-cap(e.frame))
+			return e.frame
+		}
+
 		// Check whether one more packet would fit into the frame.
 		// At least 40B are needed to fit IPv6 header into it.
 		if cap(e.frame)-pos < 40 {
 			return e.frame[:pos]
 		}
+
 		// If there's nothing but the header in the current frame we are going to fetch more
 		// data in blocking manner. If there's already some data in the frame we will
 		// still try to stuff it with more packets, but if there are no packets available,
 		// we'll send what we have immediately.
+
+		// Unlock to prevent setPaths() from being blocked.
+		e.mutex.Unlock()
 		block := (pos == hdrLen)
 		var n int
 		e.pkt, n = e.ring.Read(block)
+		e.mutex.Lock()
+
+		if pos > cap(e.frame) {
+			fmt.Printf("Drop a frame with size %d\n", pos-cap(e.frame))
+			return e.frame
+		}
 		if n == 0 {
 			// No more packets to stuff into the frame. Go on with sending.
 			return e.frame[:pos]
@@ -191,6 +215,24 @@ func (e *encoder) copyToFrame() int {
 	copy(e.frame[pos:pos+toCopy], e.pkt[:toCopy])
 	e.pkt = e.pkt[toCopy:]
 	return toCopy
+}
+
+// Change the frame buffer size. If the size becomes bigger, it simply copy the buffer
+// to a newly allocated one. If the size becomes smaller, the current frame is dropped.
+func (e *encoder) ChangeFrameSize(mtu int) {
+	e.mutex.Lock()
+	defer e.mutex.Unlock()
+
+	if mtu > cap(e.frame) {
+		newFrame := make([]byte, len(e.frame), mtu)
+		copy(newFrame, e.frame)
+		e.frame = newFrame
+	}
+	if mtu < cap(e.frame) {
+		newFrame := make([]byte, intMin(len(e.frame), mtu), mtu)
+		copy(newFrame, e.frame)
+		e.frame = newFrame
+	}
 }
 
 // NewStreamID generates a new random stream ID.

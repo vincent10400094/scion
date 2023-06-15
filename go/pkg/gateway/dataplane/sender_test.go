@@ -88,13 +88,13 @@ func TestSender(t *testing.T) {
 				{Payload: createPkt([]byte{1, 2, 3})},
 				{Payload: createPkt([]byte{1, 2, 3}), Wait: true},
 			},
-			ExpMaxFrames: 2,
+			ExpMaxFrames: 3,
 		},
 		"Splitting": {
 			Writes: []WriteCall{
 				{Payload: createPkt(make([]byte, 300)), Wait: true},
 			},
-			ExpFrames: 2,
+			ExpFrames: 1,
 		},
 	}
 	for name, test := range tests {

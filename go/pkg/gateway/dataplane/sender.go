@@ -35,7 +35,9 @@ const (
 
 // sender handles sending traffic via one particular path.
 type sender struct {
-	encoder            *encoder
+	Mtu                int
+	StreamID           uint32
+	ring               *pktRing
 	conn               net.PacketConn
 	address            net.Addr
 	pathStatsPublisher PathStatsPublisher
@@ -62,8 +64,10 @@ func newSender(sessID uint8, conn net.PacketConn, path snet.Path,
 	}
 
 	c := &sender{
-		encoder: newEncoder(sessID, NewStreamID(), uint16(mtu)),
-		conn:    conn,
+		Mtu:      mtu,
+		StreamID: NewStreamID(),
+		ring:     newPktRing(),
+		conn:     conn,
 		address: &snet.UDPAddr{
 			IA:      path.Destination(),
 			Path:    path.Dataplane(),
@@ -85,7 +89,7 @@ func newSender(sessID uint8, conn net.PacketConn, path snet.Path,
 // Close closes the sender. The function returns immediately, but any buffered
 // data will still be sent out.
 func (c *sender) Close() {
-	c.encoder.Close()
+	c.ring.Close()
 }
 
 // Write sends the packet to the remote gateway in asynchronous manner.
@@ -93,13 +97,15 @@ func (c *sender) Write(pkt []byte) {
 	increaseCounterMetric(c.metrics.IPPktsSent, 1)
 	increaseCounterMetric(c.metrics.IPPktBytesSent, float64(len(pkt)))
 
-	c.encoder.Write(pkt)
+	c.ring.Write(pkt, false)
 }
 
 func (c *sender) run() {
 	for {
-		frame := c.encoder.Read()
-		if frame == nil {
+		// Because there is only complete SIG frames written to the ring,
+		// we can read the frames in blocking mode.
+		frame, n := c.ring.Read(true)
+		if n == -1 {
 			// Sender was closed and all the buffered frames were sent.
 			break
 		}

@@ -83,6 +83,27 @@ func TestTwoPaths(t *testing.T) {
 	sess.Close()
 }
 
+// Test path selection algortihm, which will select 2 paths out of 3.
+func TestThreePaths(t *testing.T) {
+	ctrl := gomock.NewController(t)
+	defer ctrl.Finish()
+
+	// Unbuffered channel guarantees that the frames won't be sent out
+	// immediately, but only when waitFrames is called.
+	frameChan := make(chan ([]byte))
+
+	sess := createSession(t, ctrl, frameChan)
+
+	sess.SetPaths([]snet.Path{
+		createMockPath(ctrl, 200),
+		createMockPath(ctrl, 201),
+		createMockPath(ctrl, 202),
+	})
+	sendPackets(t, sess, 22, 30)
+	waitFrames(t, frameChan, 22, 30)
+	sess.Close()
+}
+
 func TestNoLeak(t *testing.T) {
 	defer goleak.VerifyNone(t)
 
@@ -129,10 +150,7 @@ func createSession(t *testing.T, ctrl *gomock.Controller, frameChan chan []byte)
 			frameChan <- f
 			return 0, nil
 		}).AnyTimes()
-	return &Session{
-		SessionID:     22,
-		DataPlaneConn: conn,
-	}
+	return NewSession(22, net.UDPAddr{}, conn, nil, SessionMetrics{}, 2)
 }
 
 func sendPackets(t *testing.T, sess *Session, payloadSize int, pktCount int) {

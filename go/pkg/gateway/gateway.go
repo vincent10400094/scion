@@ -85,13 +85,16 @@ func (dpf DataplaneSessionFactory) New(id uint8, policyID int,
 		FramesSent:         metrics.CounterWith(dpf.Metrics.FramesSent, labels...),
 		SendExternalErrors: dpf.Metrics.SendExternalErrors,
 	}
-	sess := &dataplane.Session{
-		SessionID:          id,
-		GatewayAddr:        *remoteAddr.(*net.UDPAddr),
-		DataPlaneConn:      conn,
-		PathStatsPublisher: dpf.PathStatsPublisher,
-		Metrics:            metrics,
-	}
+
+	// TODO: read numPaths from the config.
+	sess := dataplane.NewSession(
+		id,
+		*remoteAddr.(*net.UDPAddr),
+		conn,
+		dpf.PathStatsPublisher,
+		metrics,
+		uint8(2),
+	)
 	return sess
 }
 
