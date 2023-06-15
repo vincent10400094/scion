@@ -180,6 +180,8 @@ type Gateway struct {
 	TrafficPolicyFile string
 	// RoutingPolicyFile holds the location of the routing policy file.
 	RoutingPolicyFile string
+	// Number of paths used for multi-path transmission
+	NumPaths int
 
 	// ControlClientIP is the IP for network prefix discovery.
 	ControlClientIP net.IP

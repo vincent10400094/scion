@@ -131,6 +131,7 @@ func realMain(ctx context.Context) error {
 		ID:                       globalCfg.Gateway.ID,
 		TrafficPolicyFile:        globalCfg.Gateway.TrafficPolicy,
 		RoutingPolicyFile:        globalCfg.Gateway.IPRoutingPolicy,
+		NumPaths:                 globalCfg.Gateway.NumPaths,
 		ControlServerAddr:        controlAddress,
 		ControlClientIP:          controlAddress.IP,
 		ServiceDiscoveryClientIP: controlAddress.IP,

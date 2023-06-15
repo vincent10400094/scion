@@ -51,6 +51,8 @@ type Gateway struct {
 	DataAddr string `toml:"data_addr,omitempty"`
 	// Probe address, for probing paths.
 	ProbeAddr string `toml:"probe_addr,omitempty"`
+	// Number of paths used for multi-path transmission
+	NumPaths int `toml:"omitempty"`
 }
 
 func (cfg *Gateway) Validate() error {
