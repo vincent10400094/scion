@@ -140,7 +140,9 @@ func (s *Session) String() string {
 // reordering issues.
 func (s *Session) SetPaths(paths []snet.Path) error {
 	s.mutex.Lock()
+	s.encoder.Lock()
 	defer s.mutex.Unlock()
+	defer s.encoder.Unlock()
 
 	created := make([]*sender, 0, len(paths))
 	reused := make(map[*sender]bool, len(s.senders))
@@ -190,12 +192,12 @@ func (s *Session) SetPaths(paths []snet.Path) error {
 			string(newSenders[y].pathFingerprint)) == -1
 	})
 	s.senders = newSenders
-	s.selectPaths()
+	s.updateSelectedSenders(newSenders)
 	return nil
 }
 
-func (s *Session) selectPaths() {
-	selectedSenders := s.selectSenders()
+func (s *Session) updateSelectedSenders(sendersCandidates []*sender) {
+	selectedSenders := selectSenders(sendersCandidates, int(s.numPaths))
 	// Sort the selected paths by their MTU to interleave packets more conveniently
 	sort.Slice(selectedSenders, func(x, y int) bool {
 		return (selectedSenders[x].Mtu < selectedSenders[y].Mtu)
@@ -207,70 +209,21 @@ func (s *Session) selectPaths() {
 	for _, s := range s.selectedSenders {
 		mtuSum += (s.Mtu - hdrLen)
 	}
-	// Packets and packet fragments not read are dropped,
-	// and the encoder is replaced by a new one with new mtu sum.
-	// Session ID and stream ID are not used here.
-	if s.currentMtuSum != mtuSum {
-		s.encoder.ChangeFrameSize(mtuSum)
-		s.currentMtuSum = mtuSum
-	}
-}
-
-// select s.numPaths paths from available paths.
-// TODO: implement path scheduler
-func (s *Session) selectSenders() []*sender {
-	// when there is no need to select senders,
-	// including the case that currently there is no path.
-	numPaths := int(s.numPaths)
-	n := len(s.senders)
-	if numPaths >= n {
-		return s.senders
-	}
-
-	// Fisher–Yates shuffle
-	// Not very random, but fine for now
-	selectedSenders := make([]*sender, numPaths)
-	array := make([]int, n)
-	for i := 0; i < n; i++ {
-		array[i] = i
-	}
-	seed := int(time.Now().UnixNano() & 0xffff)
-	for i := 0; i < numPaths; i++ {
-		last := n - 1 - i
-		choice := seed % (last + 1)
-		if last != choice {
-			array[last], array[choice] = array[choice], array[last]
-		}
-		selectedIndex := array[last]
-		selectedSenders[i] = s.senders[selectedIndex]
-	}
-	return selectedSenders
+	s.currentMtuSum = mtuSum
+	s.encoder.ChangeFrameSize(mtuSum)
 }
 
 func (s *Session) run() {
 	for {
-		// There is a race condition issue.
-		// If the paths changes after encoder.Read() returns and before the mutex is locked,
-		// the value of currentMtuSum will be different to len(frame)
 		frame := s.encoder.Read()
 		if frame == nil {
 			// Sender was closed and all the buffered frames were sent.
 			break
 		}
 
-		// Lock to avoid that paths changes during sending the packets.
-		s.mutex.Lock()
-		// If the path changes, and mtu sum becomes smaller than the frame,
-		// then silently drop the frame.
-		if len(frame) > s.currentMtuSum {
-			s.mutex.Unlock()
-			continue
-		}
-
 		// Split and interleave the packets, then send through selected paths.
 		s.splitAndSend(frame)
 		s.seq++
-		s.mutex.Unlock()
 	}
 }
 
@@ -280,7 +233,7 @@ func (s *Session) splitAndSend(frame []byte) {
 	n := len(s.selectedSenders)
 	splits := make([][]byte, n)
 	for i := 0; i < n; i++ {
-		splits[i] = make([]byte, 0)
+		splits[i] = make([]byte, 0, s.selectedSenders[i].Mtu)
 	}
 
 	payload := frame[hdrLen:]
@@ -309,7 +262,7 @@ func (s *Session) splitAndSend(frame []byte) {
 	numPaths := int(s.numPaths)
 	for i := n; i < numPaths; i++ {
 		sender := s.selectedSenders[i%n]
-		encodedFrame := s.encodeFrame(make([]byte, 0), 0, 0, uint8(i))
+		encodedFrame := s.encodeFrame(make([]byte, 0), 0xffff, sender.StreamID, uint8(i))
 		sender.Write(encodedFrame)
 	}
 }
@@ -385,4 +338,34 @@ func extractQuintuple(packet gopacket.Packet) []byte {
 		binary.BigEndian.PutUint16(q[pos+2:pos+4], uint16(udp.DstPort))
 	}
 	return q
+}
+
+// select s.numPaths paths from available paths.
+// TODO: implement path scheduler
+func selectSenders(candidates []*sender, numSelection int) []*sender {
+	// when there is no need to select senders,
+	// including the case that currently there is no path.
+	n := len(candidates)
+	if numSelection >= n {
+		return candidates
+	}
+
+	// Fisher–Yates shuffle
+	// Not very random, but fine for now
+	selectedSenders := make([]*sender, numSelection)
+	array := make([]int, n)
+	for i := 0; i < n; i++ {
+		array[i] = i
+	}
+	seed := int(time.Now().UnixNano() & 0xffff)
+	for i := 0; i < numSelection; i++ {
+		last := n - 1 - i
+		choice := seed % (last + 1)
+		if last != choice {
+			array[last], array[choice] = array[choice], array[last]
+		}
+		selectedIndex := array[last]
+		selectedSenders[i] = candidates[selectedIndex]
+	}
+	return selectedSenders
 }

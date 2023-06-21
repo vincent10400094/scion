@@ -16,7 +16,6 @@ package dataplane
 
 import (
 	"encoding/binary"
-	"fmt"
 	"sync"
 	"time"
 )
@@ -65,19 +64,24 @@ type encoder struct {
 	// frame is the frame being built at the moment.
 	// To avoid allocations, we reuse the same frame buffer over and over again.
 	frame []byte
-	mutex sync.Mutex
+	// Mutex for the frame buffer, preventing buffer from resizing when there is some packets within.
+	// The mutex is locked all the time, and it's only unlocked when e.Read() is blocked,
+	// and is locked again after e.Read() returns.
+	frameMtx sync.Mutex
 }
 
 // newEncoder creates a new encoder instance.
 // mtu is max size of the frame, excluding SCION header, but including SIG header.
 func newEncoder(sessionID uint8, streamID uint32, mtu uint16) *encoder {
-	return &encoder{
+	e := &encoder{
 		sessionID: sessionID,
 		streamID:  streamID,
 		seq:       0,
 		ring:      newPktRing(),
 		frame:     make([]byte, 0, mtu),
 	}
+	e.Lock()
+	return e
 }
 
 // Close initiates the close procedure. Frames can still be read.
@@ -95,9 +99,6 @@ func (e *encoder) Write(pkt []byte) {
 // The function blocks if there are no frames available.
 // When the encoder is closed, the function returns nil.
 func (e *encoder) Read() []byte {
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
-
 	e.frame = e.frame[:hdrLen]
 	// Write the header.
 	e.frame[versionPos] = 0
@@ -119,13 +120,6 @@ func (e *encoder) Read() []byte {
 	// Read more packets and fill in as much of the frame as possible.
 	var indexSet bool
 	for {
-		// Frame buffer becomes smaller, and doesn't fit the current frame,
-		// drop the exceeded frame and return the current frame.
-		if pos > cap(e.frame) {
-			fmt.Printf("Drop a frame with size %d\n", pos-cap(e.frame))
-			return e.frame
-		}
-
 		// Check whether one more packet would fit into the frame.
 		// At least 40B are needed to fit IPv6 header into it.
 		if cap(e.frame)-pos < 40 {
@@ -137,17 +131,20 @@ func (e *encoder) Read() []byte {
 		// still try to stuff it with more packets, but if there are no packets available,
 		// we'll send what we have immediately.
 
-		// Unlock to prevent setPaths() from being blocked.
-		e.mutex.Unlock()
+		// The Read() function will only be blocked when there is nothing but the header.
+		// So it's safe to unlock, and let the frame buffer being resized during the time window.
 		block := (pos == hdrLen)
+		if block {
+			e.frameMtx.Unlock()
+		}
 		var n int
 		e.pkt, n = e.ring.Read(block)
-		e.mutex.Lock()
 
-		if pos > cap(e.frame) {
-			fmt.Printf("Drop a frame with size %d\n", pos-cap(e.frame))
-			return e.frame
+		// Obtain the lock to prevent frame buffer from being resized during the frame generation.
+		if block {
+			e.frameMtx.Lock()
 		}
+
 		if n == 0 {
 			// No more packets to stuff into the frame. Go on with sending.
 			return e.frame[:pos]
@@ -217,12 +214,17 @@ func (e *encoder) copyToFrame() int {
 	return toCopy
 }
 
+func (e *encoder) Lock() {
+	e.frameMtx.Lock()
+}
+
+func (e *encoder) Unlock() {
+	e.frameMtx.Unlock()
+}
+
 // Change the frame buffer size. If the size becomes bigger, it simply copy the buffer
 // to a newly allocated one. If the size becomes smaller, the current frame is dropped.
 func (e *encoder) ChangeFrameSize(mtu int) {
-	e.mutex.Lock()
-	defer e.mutex.Unlock()
-
 	if mtu > cap(e.frame) {
 		newFrame := make([]byte, len(e.frame), mtu)
 		copy(newFrame, e.frame)
