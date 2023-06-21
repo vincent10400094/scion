@@ -47,6 +47,7 @@ type worker struct {
 	SessID           uint8
 	Ring             *ringbuf.Ring
 	Metrics          IngressMetrics
+	numPaths         uint8
 	rlists           map[int]*reassemblyList
 	markedForCleanup bool
 	tunIO            io.WriteCloser
@@ -62,6 +63,7 @@ func newWorker(remote *snet.UDPAddr, sessID uint8,
 		rlists:  make(map[int]*reassemblyList),
 		tunIO:   tunIO,
 		Metrics: metrics,
+		numPaths: 2, // need to be changed later
 	}
 
 	return worker
@@ -121,7 +123,7 @@ func (w *worker) processFrame(ctx context.Context, frame *frameBuf) {
 func (w *worker) getRlist(epoch int) *reassemblyList {
 	rlist, ok := w.rlists[epoch]
 	if !ok {
-		rlist = newReassemblyList(epoch, reassemblyListCap, w, w.Metrics.FramesDiscarded)
+		rlist = newReassemblyList(epoch, reassemblyListCap, w.numPaths, w, w.Metrics.FramesDiscarded)
 		w.rlists[epoch] = rlist
 	}
 	rlist.markedForDeletion = false
