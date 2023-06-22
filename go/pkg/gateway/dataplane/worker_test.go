@@ -343,4 +343,25 @@ func TestParsing(t *testing.T) {
 		51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
 	})
 	mt.AssertDone(t)
+
+	// Only 1 path. The other frame should be empty (only SIG header)
+	SendFrame(t, w, []byte{
+		// SIG frame header.
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 0,
+		// IPv4 header.
+		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		// Payload.
+		101, 102, 103,
+	})
+	SendFrame(t, w, []byte{
+		// SIG frame header.
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 1,
+	})
+	mt.AssertPacket(t, []byte{
+		// IPv4 header.
+		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		// Payload.
+		101, 102, 103,
+	})
+	mt.AssertDone(t)
 }

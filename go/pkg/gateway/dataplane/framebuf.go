@@ -245,7 +245,12 @@ func (fbg *frameBufGroup) TryAndCombine() bool {
 	copy(frame.raw[:hdrLen], ref.raw[:hdrLen])
 
 	splitId, minSplitId, frameLen := 0, 0, hdrLen
-	n := int(fbg.numPaths)
+
+	// n := int(fbg.numPaths)
+	n := 0
+	for n < int(fbg.numPaths) && fbg.frames[n].frameLen > hdrLen {
+		n++
+	}
 	frameIndices := make([]int, n)
 	for i := 0; i < n; i++ {
 		frameIndices[i] = hdrLen

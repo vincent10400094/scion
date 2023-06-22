@@ -121,7 +121,7 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 		currFrameGroup := curr.Value.(*frameBufGroup)
 		if currFrameGroup.groupSeqNr != groupSeqNr {
 			// Should never happen.
-			logger.Error("Missing group sequence number", groupSeqNr)
+			logger.Error("Cannot find frame group", "groupSeqNr", groupSeqNr)
 			// Safest to remove all frames in the list.
 			l.removeBefore(last)
 			frame.Release()
