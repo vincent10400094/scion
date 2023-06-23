@@ -221,7 +221,6 @@ func (s *Session) splitAndSend(frame []byte) {
 	}
 
 	payload := frame[hdrLen:]
-	fmt.Println("payload", payload)
 	splitId, minSplitId := 0, 0
 	for i := 0; i < len(payload); i++ {
 		if splitId >= n {

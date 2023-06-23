@@ -150,7 +150,7 @@ func createSession(t *testing.T, ctrl *gomock.Controller, frameChan chan []byte)
 			frameChan <- f
 			return 0, nil
 		}).AnyTimes()
-	return NewSession(22, net.UDPAddr{}, conn, nil, SessionMetrics{}, 2)
+	return NewSession(22, net.UDPAddr{}, conn, nil, SessionMetrics{})
 }
 
 func sendPackets(t *testing.T, sess *Session, payloadSize int, pktCount int) {
