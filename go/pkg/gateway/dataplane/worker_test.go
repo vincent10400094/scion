@@ -65,6 +65,30 @@ func SendFrame(t *testing.T, w *worker, data []byte) {
 	w.processFrame(context.Background(), f)
 }
 
+func SplitAndSend(t *testing.T, w *worker, data []byte) {
+	n := 2
+	splits := make([][]byte, n)
+	for i := 0; i < n; i++ {
+		splits[i] = make([]byte, 0, 1000)
+	}
+
+	payload := data[hdrLen:]
+	splitId, minSplitId := 0, 0
+	for i := 0; i < len(payload); i++ {
+		if splitId >= n {
+			splitId = minSplitId
+		}
+		splits[splitId] = append(splits[splitId], payload[i])
+		splitId++
+	}
+
+	for i := 0; i < n; i++ {
+		realHdr := append(data[:hdrLen-1], uint8(i))
+		splits[i] = append(realHdr, splits[i]...)
+		SendFrame(t, w, splits[i])
+	}
+}
+
 func TestParsing(t *testing.T) {
 	addr := &snet.UDPAddr{
 		IA: xtest.MustParseIA("1-ff00:0:300"),
@@ -77,9 +101,9 @@ func TestParsing(t *testing.T) {
 	w := newWorker(addr, 1, mt, IngressMetrics{})
 
 	// Single frame with a single IPv4 packet inside.
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 1,
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 1, 0,
 		// IPv4 header.
 		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		// Payload.
@@ -94,9 +118,9 @@ func TestParsing(t *testing.T) {
 	mt.AssertDone(t)
 
 	// Single frame with a single IPv6 packet inside.
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 2,
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 2, 0,
 		// IPv6 header.
 		0x60, 0, 0, 0, 0, 3, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
@@ -113,9 +137,9 @@ func TestParsing(t *testing.T) {
 	mt.AssertDone(t)
 
 	// Single frame with two packets inside.
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 3,
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 3, 0,
 		// IPv4 header.
 		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		// Payload.
@@ -140,17 +164,17 @@ func TestParsing(t *testing.T) {
 	mt.AssertDone(t)
 
 	// Single packet split into two frames.
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 4,
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 4, 0,
 		// IPv4 header.
 		0x40, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		// Payload.
 		51, 52, 53, 54, 55, 56,
 	})
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 255, 255, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 5,
+		0, 1, 255, 255, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 5, 0,
 		// Payload.
 		57, 58,
 	})
@@ -163,17 +187,17 @@ func TestParsing(t *testing.T) {
 	mt.AssertDone(t)
 
 	// Packet at a non-zero position in the frame.
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 6,
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 6, 0,
 		// IPv4 header.
 		0x40, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		// Payload (unfinished).
 		51, 52, 53, 54, 55, 56,
 	})
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 7,
+		0, 1, 0, 2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 0,
 		// Payload (continued).
 		57, 58,
 		// IPv4 header.
@@ -196,17 +220,17 @@ func TestParsing(t *testing.T) {
 	mt.AssertDone(t)
 
 	// A hole in the packet sequence.
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 8,
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 8, 0,
 		// IPv4 header.
 		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		// Payload.
 		101, 102, 103,
 	})
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 10,
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 10, 0,
 		// IPv4 header.
 		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		201, 202, 203,
@@ -229,17 +253,17 @@ func TestParsing(t *testing.T) {
 	// The half-read packet should be discarded.
 	// The trailing bytes at the beginning of the subsequent frame
 	// should be ignored.
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 11,
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 11, 0,
 		// IPv4 header.
 		0x40, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		// Payload (unfinished).
 		51, 52, 53, 54, 55, 56,
 	})
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 13,
+		0, 1, 0, 8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 13, 0,
 		// Payload (a trailing part, but not the continuation of the previous payload).
 		70, 71, 72, 73, 74, 75, 76, 77,
 		// IPv4 header.
@@ -257,9 +281,9 @@ func TestParsing(t *testing.T) {
 
 	// Invalid packet. The remaining part of the frame should be dropped, but
 	// the processing should catch up in the next frame.
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 14,
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 14, 0,
 		// IPv4 header.
 		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		// Payload (unfinished).
@@ -267,9 +291,9 @@ func TestParsing(t *testing.T) {
 		// IPv5 header - error!
 		0x50, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 16, 18, 19, 20,
 	})
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 15,
+		0, 1, 0, 8, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 15, 0,
 		// Invalid packet (continued).
 		21, 22, 23, 24, 25, 26, 27, 28,
 		// IPv4 header.
@@ -292,23 +316,23 @@ func TestParsing(t *testing.T) {
 	mt.AssertDone(t)
 
 	// One packet split into 3 frames.
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 4,
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 4, 0,
 		// IPv4 header.
 		0x40, 0, 0, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		// Payload.
 		51, 52, 53, 54, 55, 56,
 	})
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 255, 255, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 5,
+		0, 1, 255, 255, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 5, 0,
 		// Payload.
 		57, 58,
 	})
-	SendFrame(t, w, []byte{
+	SplitAndSend(t, w, []byte{
 		// SIG frame header.
-		0, 1, 255, 255, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 6,
+		0, 1, 255, 255, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 6, 0,
 		// Payload.
 		59, 60,
 	})
@@ -317,6 +341,27 @@ func TestParsing(t *testing.T) {
 		0x40, 0, 0, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		// Payload.
 		51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
+	})
+	mt.AssertDone(t)
+
+	// Only 1 path. The other frame should be empty (only SIG header)
+	SendFrame(t, w, []byte{
+		// SIG frame header.
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 0,
+		// IPv4 header.
+		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		// Payload.
+		101, 102, 103,
+	})
+	SendFrame(t, w, []byte{
+		// SIG frame header.
+		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 1,
+	})
+	mt.AssertPacket(t, []byte{
+		// IPv4 header.
+		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		// Payload.
+		101, 102, 103,
 	})
 	mt.AssertDone(t)
 }

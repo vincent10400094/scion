@@ -185,3 +185,95 @@ func initFreeFrames() {
 		return newFrameBuf()
 	}, "ingress_free")
 }
+
+type frameBufGroup struct {
+	// The first 56 bits of SeqNr
+	groupSeqNr uint64
+	// The size of the group
+	numPaths uint8
+	// The number of frames we get
+	frameCnt uint8
+	// The frames with the same groupSeqNr
+	frames []*frameBuf
+	// The combined frame
+	combined *frameBuf
+	// Is the group combined
+	isCombined bool
+}
+
+func NewFrameBufGroup(fb *frameBuf, numPaths uint8) *frameBufGroup {
+	groupSeqNr := fb.seqNr >> 8
+	pathIndex := uint8(fb.seqNr & 0xff)
+	if pathIndex >= numPaths {
+		// Error: path index out of bound
+		return nil
+	}
+	fbg := &frameBufGroup{
+		groupSeqNr: groupSeqNr,
+		numPaths: numPaths,
+		frameCnt: 1,
+		frames: make([]*frameBuf, numPaths),
+		combined: &frameBuf{raw: make([]byte, frameBufCap*int(numPaths))},
+		isCombined: false,
+	}
+	fbg.frames[pathIndex] = fb
+	fbg.combined.Reset()
+	return fbg
+}
+
+func (fbg *frameBufGroup) Release() {
+	for i := 0; i < int(fbg.numPaths); i++ {
+		if fbg.frames[i] != nil {
+			fbg.frames[i].Release()
+		}
+	}
+}
+
+func (fbg *frameBufGroup) TryAndCombine() bool {
+	if fbg.isCombined {
+		return true
+	}
+	if fbg.frameCnt != fbg.numPaths {
+		return false
+	}
+	// combine
+	frame := fbg.combined
+	ref := fbg.frames[0]
+	frame.index = ref.index
+	frame.seqNr = ref.seqNr
+	frame.snd = ref.snd
+	copy(frame.raw[:hdrLen], ref.raw[:hdrLen])
+
+	splitId, minSplitId, frameLen := 0, 0, hdrLen
+
+	// n := int(fbg.numPaths)
+	n := 0
+	for n < int(fbg.numPaths) && fbg.frames[n].frameLen > hdrLen {
+		n++
+	}
+	frameIndices := make([]int, n)
+	for i := 0; i < n; i++ {
+		frameIndices[i] = hdrLen
+	}
+
+	// Require that the length of frames are non-decreasing
+	// Should be changed with the split algorithm in session.go
+	for {
+		if splitId >= n {
+			splitId = minSplitId
+		}
+		for splitId < n && frameIndices[splitId] >= fbg.frames[splitId].frameLen {
+			splitId++
+			minSplitId = splitId
+		}
+		if minSplitId >= n {
+			break
+		}
+		frame.raw[frameLen] = fbg.frames[splitId].raw[frameIndices[splitId]]
+		frameIndices[splitId]++
+		splitId++
+		frameLen++
+	}
+	frame.frameLen = frameLen
+	return true
+}
