@@ -36,7 +36,6 @@ const (
 // sender handles sending traffic via one particular path.
 type sender struct {
 	Mtu                int
-	StreamID           uint32
 	ring               *pktRing
 	conn               net.PacketConn
 	address            net.Addr
@@ -64,10 +63,9 @@ func newSender(sessID uint8, conn net.PacketConn, path snet.Path,
 	}
 
 	c := &sender{
-		Mtu:      mtu,
-		StreamID: NewStreamID(),
-		ring:     newPktRing(),
-		conn:     conn,
+		Mtu:  mtu,
+		ring: newPktRing(),
+		conn: conn,
 		address: &snet.UDPAddr{
 			IA:      path.Destination(),
 			Path:    path.Dataplane(),
