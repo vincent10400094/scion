@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"container/list"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -29,6 +30,8 @@ import (
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/metrics"
 	"github.com/scionproto/scion/go/lib/snet"
+
+	"github.com/cloud9-tools/go-galoisfield"
 )
 
 var (
@@ -216,22 +219,38 @@ func (s *Session) run() {
 func (s *Session) splitAndSend(frame []byte) {
 	n := len(s.senders)
 	splits := make([][]byte, n)
+	availableFrames := list.New()
 	for i := 0; i < n; i++ {
 		splits[i] = make([]byte, 0, s.senders[i].Mtu)
+		availableFrames.PushBack(i)
 	}
 
 	payload := frame[hdrLen:]
-	splitId, minSplitId := 0, 0
-	for i := 0; i < len(payload); i++ {
-		if splitId >= n {
-			splitId = minSplitId
+	now := 0
+	for now + availableFrames.Len() <= len(payload) {
+		currBytes := AONTEncoder(payload[now : now + availableFrames.Len()])
+		now += availableFrames.Len()
+		cnt := 0
+		removedFrame := make([]*list.Element, 0)
+		for aFrame := availableFrames.Front(); aFrame != nil; aFrame = aFrame.Next() {
+			splitId := aFrame.Value.(int)
+			splits[splitId] = append(splits[splitId], currBytes[cnt])
+			if len(splits[splitId]) >= s.senders[splitId].Mtu {
+				// full
+				removedFrame = append(removedFrame, aFrame)
+			}
+			cnt++
 		}
-		for len(splits[splitId]) >= s.senders[splitId].Mtu {
-			splitId++
-			minSplitId = splitId
+		for i := 0; i < len(removedFrame); i++ {
+			availableFrames.Remove(removedFrame[i])
 		}
-		splits[splitId] = append(splits[splitId], payload[i])
-		splitId++
+	}
+	currBytes := AONTEncoder(payload[now : ])
+	aFrame := availableFrames.Front()
+	for cnt := 0; cnt < len(currBytes); cnt++ {
+		splitId := aFrame.Value.(int)
+		splits[splitId] = append(splits[splitId], currBytes[cnt])
+		aFrame = aFrame.Next()
 	}
 
 	// Send each split with respective path
@@ -315,4 +334,31 @@ func extractQuintuple(packet gopacket.Packet) []byte {
 		binary.BigEndian.PutUint16(q[pos+2:pos+4], uint16(udp.DstPort))
 	}
 	return q
+}
+
+func AONTEncoder(bytes []byte) []byte{
+	n := len(bytes)
+	if n <= 1 {
+		// AONT is not applied
+		return bytes
+	}
+	
+	// Default: GF(256)
+	// a in GF(256) where a^2 = a + 1
+	// AONT encoder is actually a matrix muliplication:
+	// | y1 |   | 1 0 ... 0 1 | | x1 |
+	// | y2 |   | 0 1 ... 0 1 | | x2 |
+	// | y3 | = | ... ... ... | | x3 |
+	// | .. |   | 0 0 ... 1 1 | | .. |
+	// | yn |   | 1 1 ... 1 a | | xn |
+
+	GF := galoisfield.Default
+	a := GF.Exp(85)
+	ret := make([]byte, n)
+	ret[n-1] = GF.Mul(a, bytes[n-1])
+	for i := 0; i < n-1; i++ {
+		ret[i] = GF.Add(bytes[i], bytes[n-1])
+		ret[n-1] = GF.Add(ret[n-1], bytes[i])
+	}
+	return ret
 }

@@ -19,9 +19,12 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"container/list"
 
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/ringbuf"
+
+	"github.com/cloud9-tools/go-galoisfield"
 )
 
 const (
@@ -244,36 +247,74 @@ func (fbg *frameBufGroup) TryAndCombine() bool {
 	frame.snd = ref.snd
 	copy(frame.raw[:hdrLen], ref.raw[:hdrLen])
 
-	splitId, minSplitId, frameLen := 0, 0, hdrLen
+	unfunishedFrames := list.New()
+	for i := 0; i < int(fbg.numPaths) && fbg.frames[i].frameLen > hdrLen; i++ {
+		unfunishedFrames.PushBack(i)
+	}
+	
+	now, frameLen := hdrLen, hdrLen
+	for unfunishedFrames.Len() > 0 {
+		n := unfunishedFrames.Len()
+		currBytes := make([]byte, 0)
+		removedFrame := make([]*list.Element, 0)
+		for uFrame := unfunishedFrames.Front(); uFrame != nil; uFrame = uFrame.Next() {
+			frameId := uFrame.Value.(int)
+			currBytes = append(currBytes, fbg.frames[frameId].raw[now])
+			if fbg.frames[frameId].frameLen <= now+1 {
+				removedFrame = append(removedFrame, uFrame)
+			}
+		}
+		for i := 0; i < len(removedFrame); i++ {
+			unfunishedFrames.Remove(removedFrame[i])
+		}
+		now++
+		copy(frame.raw[frameLen : frameLen+n], AONTDecoder(currBytes))
+		frameLen += n
+	}
 
-	// n := int(fbg.numPaths)
-	n := 0
-	for n < int(fbg.numPaths) && fbg.frames[n].frameLen > hdrLen {
-		n++
-	}
-	frameIndices := make([]int, n)
-	for i := 0; i < n; i++ {
-		frameIndices[i] = hdrLen
-	}
-
-	// Require that the length of frames are non-decreasing
-	// Should be changed with the split algorithm in session.go
-	for {
-		if splitId >= n {
-			splitId = minSplitId
-		}
-		for splitId < n && frameIndices[splitId] >= fbg.frames[splitId].frameLen {
-			splitId++
-			minSplitId = splitId
-		}
-		if minSplitId >= n {
-			break
-		}
-		frame.raw[frameLen] = fbg.frames[splitId].raw[frameIndices[splitId]]
-		frameIndices[splitId]++
-		splitId++
-		frameLen++
-	}
 	frame.frameLen = frameLen
 	return true
+}
+
+func AONTDecoder(bytes []byte) []byte {
+	n := len(bytes)
+	if n <= 1 {
+		// AONT is not applied
+		return bytes
+	}
+
+	// Default: GF(256)
+	// a, b in GF(256) where b = a^2 = a + 1
+	// Similarly, we also have a = b^2 = b + 1
+	// AONT decoder is actually a matrix muliplication:
+	// Case 1: n is even
+	// | x1 |   | b a ... a a | | y1 |   | a a ... a a | | y1 |   | y1 |
+	// | x2 |   | a b ... a a | | y2 |   | a a ... a a | | y2 |   | y2 |
+	// | x3 | = | ... ... ... | | y3 | = | ... ... ... | | y3 | + | y3 |
+	// | .. |   | a a ... b a | | .. |   | a a ... a a | | .. |   | .. |
+	// | xn |   | a a ... a a | | yn |   | a a ... a a | | yn |   | 0  |
+	// Case 2: n is odd
+	// | x1 |   | a b ... b b | | y1 |   | b b ... b b | | y1 |   | y1 |
+	// | x2 |   | b a ... b b | | y2 |   | b b ... b b | | y2 |   | y2 |
+	// | x3 | = | ... ... ... | | y3 | = | ... ... ... | | y3 | + | y3 |
+	// | .. |   | b b ... a b | | .. |   | b b ... b b | | .. |   | .. |
+	// | xn |   | b b ... b b | | yn |   | b b ... b b | | yn |   | 0  |
+
+	GF := galoisfield.Default
+	a := GF.Exp(85)
+	b := GF.Exp(170)
+	ret := make([]byte, n)
+	for i := 0; i < n; i++ {
+		ret[n-1] = GF.Add(ret[n-1], bytes[i])
+	}
+	if n%2 == 0 {
+		ret[n-1] = GF.Mul(ret[n-1], a)
+	} else {
+		ret[n-1] = GF.Mul(ret[n-1], b)
+	}
+	for i := 0; i < n-1; i++ {
+		ret[i] = GF.Add(ret[n-1], bytes[i])
+	}
+	return ret
+
 }

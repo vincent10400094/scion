@@ -18,6 +18,7 @@ import (
 	"context"
 	"net"
 	"testing"
+	"container/list"
 
 	"github.com/stretchr/testify/assert"
 
@@ -68,18 +69,30 @@ func SendFrame(t *testing.T, w *worker, data []byte) {
 func SplitAndSend(t *testing.T, w *worker, data []byte) {
 	n := 2
 	splits := make([][]byte, n)
+	availableFrames := list.New()
 	for i := 0; i < n; i++ {
 		splits[i] = make([]byte, 0, 1000)
+		availableFrames.PushBack(i)
 	}
 
 	payload := data[hdrLen:]
-	splitId, minSplitId := 0, 0
-	for i := 0; i < len(payload); i++ {
-		if splitId >= n {
-			splitId = minSplitId
+	now := 0
+	for now + availableFrames.Len() <= len(payload) {
+		currBytes := AONTEncoder(payload[now : now + availableFrames.Len()])
+		now += availableFrames.Len()
+		cnt := 0
+		for aFrame := availableFrames.Front(); aFrame != nil; aFrame = aFrame.Next() {
+			splitId := aFrame.Value.(int)
+			splits[splitId] = append(splits[splitId], currBytes[cnt])
+			cnt++
 		}
-		splits[splitId] = append(splits[splitId], payload[i])
-		splitId++
+	}
+	currBytes := AONTEncoder(payload[now : ])
+	aFrame := availableFrames.Front()
+	for cnt := 0; cnt < len(currBytes); cnt++ {
+		splitId := aFrame.Value.(int)
+		splits[splitId] = append(splits[splitId], currBytes[cnt])
+		aFrame = aFrame.Next()
 	}
 
 	for i := 0; i < n; i++ {
