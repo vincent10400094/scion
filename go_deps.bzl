@@ -183,6 +183,12 @@ def go_deps():
         version = "v0.3.4",
     )
     go_repository(
+        name = "com_github_cloud9_tools_go_galoisfield",
+        importpath = "github.com/cloud9-tools/go-galoisfield",
+        sum = "h1:te0djrMIsqx2evVAE+U98Kfa09Jszv9OVxGJzjOjOXM=",
+        version = "v0.0.0-20160311182916-a8cf2bffadf0",
+    )
+    go_repository(
         name = "com_github_cncf_udpa_go",
         importpath = "github.com/cncf/udpa/go",
         sum = "h1:cqQfy1jclcSy/FwLjemeg3SR1yaINm74aQyupQ0Bl8M=",
