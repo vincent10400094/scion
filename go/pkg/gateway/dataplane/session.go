@@ -15,6 +15,7 @@
 package dataplane
 
 import (
+	"container/list"
 	"encoding/binary"
 	"fmt"
 	"hash/crc64"
@@ -22,7 +23,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"container/list"
 
 	"github.com/google/gopacket"
 	"github.com/google/gopacket/layers"
@@ -36,6 +36,12 @@ import (
 
 var (
 	crcTable = crc64.MakeTable(crc64.ECMA)
+)
+
+// Galoas field for all-or-nothing transform
+var (
+	GF   = galoisfield.Default
+	GF_a = GF.Exp(85)
 )
 
 type PathStatsPublisher interface {
@@ -227,8 +233,8 @@ func (s *Session) splitAndSend(frame []byte) {
 
 	payload := frame[hdrLen:]
 	now := 0
-	for now + availableFrames.Len() <= len(payload) {
-		currBytes := AONTEncoder(payload[now : now + availableFrames.Len()])
+	for now+availableFrames.Len() <= len(payload) {
+		currBytes := AONTEncoder(payload[now : now+availableFrames.Len()])
 		now += availableFrames.Len()
 		cnt := 0
 		removedFrame := make([]*list.Element, 0)
@@ -245,7 +251,7 @@ func (s *Session) splitAndSend(frame []byte) {
 			availableFrames.Remove(removedFrame[i])
 		}
 	}
-	currBytes := AONTEncoder(payload[now : ])
+	currBytes := AONTEncoder(payload[now:])
 	aFrame := availableFrames.Front()
 	for cnt := 0; cnt < len(currBytes); cnt++ {
 		splitId := aFrame.Value.(int)
@@ -336,13 +342,13 @@ func extractQuintuple(packet gopacket.Packet) []byte {
 	return q
 }
 
-func AONTEncoder(bytes []byte) []byte{
+func AONTEncoder(bytes []byte) []byte {
 	n := len(bytes)
 	if n <= 1 {
 		// AONT is not applied
 		return bytes
 	}
-	
+
 	// Default: GF(256)
 	// a in GF(256) where a^2 = a + 1
 	// AONT encoder is actually a matrix muliplication:
@@ -351,14 +357,11 @@ func AONTEncoder(bytes []byte) []byte{
 	// | y3 | = | ... ... ... | | x3 |
 	// | .. |   | 0 0 ... 1 1 | | .. |
 	// | yn |   | 1 1 ... 1 a | | xn |
-
-	GF := galoisfield.Default
-	a := GF.Exp(85)
-	ret := make([]byte, n)
-	ret[n-1] = GF.Mul(a, bytes[n-1])
+	cum := GF.Mul(GF_a, bytes[n-1])
 	for i := 0; i < n-1; i++ {
-		ret[i] = GF.Add(bytes[i], bytes[n-1])
-		ret[n-1] = GF.Add(ret[n-1], bytes[i])
+		cum = GF.Add(cum, bytes[i])
+		bytes[i] = GF.Add(bytes[i], bytes[n-1])
 	}
-	return ret
+	bytes[n-1] = cum
+	return bytes
 }
