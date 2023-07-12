@@ -8,6 +8,7 @@ import (
 var (
 	GF   = galoisfield.Default
 	GF_a = GF.Exp(85)
+	GF_b = GF.Exp(170)
 )
 
 func AONTEncode(bytes []byte) []byte {
@@ -57,21 +58,18 @@ func AONTDecode(bytes []byte) []byte {
 	// | x3 | = | ... ... ... | | y3 | = | ... ... ... | | y3 | + | y3 |
 	// | .. |   | b b ... a b | | .. |   | b b ... b b | | .. |   | .. |
 	// | xn |   | b b ... b b | | yn |   | b b ... b b | | yn |   | 0  |
-
-	GF := galoisfield.Default
-	a := GF.Exp(85)
-	b := GF.Exp(170)
-	ret := make([]byte, n)
+	cum := byte(0)
 	for i := 0; i < n; i++ {
-		ret[n-1] = GF.Add(ret[n-1], bytes[i])
+		cum = GF.Add(cum, bytes[i])
 	}
 	if n%2 == 0 {
-		ret[n-1] = GF.Mul(ret[n-1], a)
+		cum = GF.Mul(cum, GF_a)
 	} else {
-		ret[n-1] = GF.Mul(ret[n-1], b)
+		cum = GF.Mul(cum, GF_b)
 	}
 	for i := 0; i < n-1; i++ {
-		ret[i] = GF.Add(ret[n-1], bytes[i])
+		bytes[i] = GF.Add(cum, bytes[i])
 	}
-	return ret
+	bytes[n-1] = cum
+	return bytes
 }
