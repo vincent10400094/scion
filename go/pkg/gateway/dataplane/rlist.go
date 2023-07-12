@@ -71,11 +71,11 @@ func newReassemblyList(epoch int, capacity int, numPaths uint8, s ingressSender,
 // list and released to the pool of frame buffers.
 func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 	logger := log.FromCtx(ctx)
+	// fmt.Println("[Received] ", "Group seq:", frame.seqNr >> 8, "index:", frame.seqNr & 0xff)
 	// If this is the first frame, write all complete packets to the wire and
 	// add the frame to the reassembly list if it contains a fragment at the end.
 	if l.entries.Len() == 0 {
-		// l.insertFirst(ctx, frame)
-		l.entries.PushBack(NewFrameBufGroup(frame, l.numPaths))
+		l.insertNewGroup(frame)
 		return
 	}
 	groupSeqNr := frame.seqNr >> 8
@@ -98,8 +98,7 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 			"currentNewest", lastFrameGroup.groupSeqNr)
 		increaseCounterMetric(l.evicted, float64(l.entries.Len()))
 		l.removeAll()
-		// l.insertFirst(ctx, frame)
-		l.entries.PushBack(NewFrameBufGroup(frame, l.numPaths))
+		l.insertNewGroup(frame)
 		return
 	}
 	// Check if we have capacity.
@@ -143,19 +142,16 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 	
 	// Check if the frame belongs to next group
 	if groupSeqNr == lastFrameGroup.groupSeqNr + 1 {
-		l.entries.PushBack(NewFrameBufGroup(frame, l.numPaths))
+		l.insertNewGroup(frame)
 	}
 	l.tryReassemble(ctx)
+	// l.printInfo()
 }
 
-// insertFirst handles the case when the reassembly list is empty and a frame needs
-// to be inserted.
-func (l *reassemblyList) insertFirst(ctx context.Context, frame *frameBuf) {
-	frame.ProcessCompletePkts(ctx)
-	if frame.frag0Start != 0 {
-		l.entries.PushBack(frame)
-	} else {
-		frame.Release()
+func (l *reassemblyList) insertNewGroup(frame *frameBuf) {
+	fbg := NewFrameBufGroup(frame, l.numPaths)
+	if fbg != nil {
+		l.entries.PushBack(fbg)
 	}
 }
 
@@ -275,6 +271,19 @@ func (l *reassemblyList) removeBefore(ele *list.Element) {
 		next = e.Next()
 		l.removeEntry(e)
 	}
+}
+
+func (l *reassemblyList) printInfo() {
+	fmt.Println("Print list info: ")
+	fmt.Println("Size:", l.entries.Len())
+	if l.entries.Len() == 0 {
+		return
+	}
+	first := l.entries.Front()
+	firstFrameGroup := first.Value.(*frameBufGroup)
+	last := l.entries.Back()
+	lastFrameGroup := last.Value.(*frameBufGroup)
+	fmt.Println("first seq:", firstFrameGroup.groupSeqNr, "last seq:", lastFrameGroup.groupSeqNr)
 }
 
 func intMin(x, y int) int {

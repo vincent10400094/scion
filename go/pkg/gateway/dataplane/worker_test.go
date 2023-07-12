@@ -66,12 +66,13 @@ func SendFrame(t *testing.T, w *worker, data []byte) {
 	w.processFrame(context.Background(), f)
 }
 
-func SplitAndSend(t *testing.T, w *worker, data []byte) {
-	n := 2
+func Split(data []byte, n int) [][]byte {
 	splits := make([][]byte, n)
 	availableFrames := list.New()
 	for i := 0; i < n; i++ {
 		splits[i] = make([]byte, 0, 1000)
+		splits[i] = append(splits[i], data[:hdrLen-1]...)
+		splits[i] = append(splits[i], uint8(i))
 		availableFrames.PushBack(i)
 	}
 
@@ -95,9 +96,14 @@ func SplitAndSend(t *testing.T, w *worker, data []byte) {
 		aFrame = aFrame.Next()
 	}
 
+	return splits
+}
+
+func SplitAndSend(t *testing.T, w *worker, data []byte) {
+	n := 2
+	splits := Split(data, n)
+
 	for i := 0; i < n; i++ {
-		realHdr := append(data[:hdrLen-1], uint8(i))
-		splits[i] = append(realHdr, splits[i]...)
 		SendFrame(t, w, splits[i])
 	}
 }
