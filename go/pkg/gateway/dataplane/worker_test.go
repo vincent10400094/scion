@@ -15,10 +15,10 @@
 package dataplane
 
 import (
+	"container/list"
 	"context"
 	"net"
 	"testing"
-	"container/list"
 
 	"github.com/stretchr/testify/assert"
 
@@ -77,8 +77,8 @@ func SplitAndSend(t *testing.T, w *worker, data []byte) {
 
 	payload := data[hdrLen:]
 	now := 0
-	for now + availableFrames.Len() <= len(payload) {
-		currBytes := AONTEncoder(payload[now : now + availableFrames.Len()])
+	for now+availableFrames.Len() <= len(payload) {
+		currBytes := AONTEncode(payload[now : now+availableFrames.Len()])
 		now += availableFrames.Len()
 		cnt := 0
 		for aFrame := availableFrames.Front(); aFrame != nil; aFrame = aFrame.Next() {
@@ -87,7 +87,7 @@ func SplitAndSend(t *testing.T, w *worker, data []byte) {
 			cnt++
 		}
 	}
-	currBytes := AONTEncoder(payload[now : ])
+	currBytes := AONTEncode(payload[now:])
 	aFrame := availableFrames.Front()
 	for cnt := 0; cnt < len(currBytes); cnt++ {
 		splitId := aFrame.Value.(int)

@@ -16,15 +16,13 @@
 package dataplane
 
 import (
+	"container/list"
 	"context"
 	"encoding/binary"
 	"fmt"
-	"container/list"
 
 	"github.com/scionproto/scion/go/lib/log"
 	"github.com/scionproto/scion/go/lib/ringbuf"
-
-	"github.com/cloud9-tools/go-galoisfield"
 )
 
 const (
@@ -213,10 +211,10 @@ func NewFrameBufGroup(fb *frameBuf, numPaths uint8) *frameBufGroup {
 	}
 	fbg := &frameBufGroup{
 		groupSeqNr: groupSeqNr,
-		numPaths: numPaths,
-		frameCnt: 1,
-		frames: make([]*frameBuf, numPaths),
-		combined: &frameBuf{raw: make([]byte, frameBufCap*int(numPaths))},
+		numPaths:   numPaths,
+		frameCnt:   1,
+		frames:     make([]*frameBuf, numPaths),
+		combined:   &frameBuf{raw: make([]byte, frameBufCap*int(numPaths))},
 		isCombined: false,
 	}
 	fbg.frames[pathIndex] = fb
@@ -251,7 +249,7 @@ func (fbg *frameBufGroup) TryAndCombine() bool {
 	for i := 0; i < int(fbg.numPaths) && fbg.frames[i].frameLen > hdrLen; i++ {
 		unfunishedFrames.PushBack(i)
 	}
-	
+
 	now, frameLen := hdrLen, hdrLen
 	for unfunishedFrames.Len() > 0 {
 		n := unfunishedFrames.Len()
@@ -268,53 +266,10 @@ func (fbg *frameBufGroup) TryAndCombine() bool {
 			unfunishedFrames.Remove(removedFrame[i])
 		}
 		now++
-		copy(frame.raw[frameLen : frameLen+n], AONTDecoder(currBytes))
+		copy(frame.raw[frameLen:frameLen+n], AONTDecode(currBytes))
 		frameLen += n
 	}
 
 	frame.frameLen = frameLen
 	return true
-}
-
-func AONTDecoder(bytes []byte) []byte {
-	n := len(bytes)
-	if n <= 1 {
-		// AONT is not applied
-		return bytes
-	}
-
-	// Default: GF(256)
-	// a, b in GF(256) where b = a^2 = a + 1
-	// Similarly, we also have a = b^2 = b + 1
-	// AONT decoder is actually a matrix muliplication:
-	// Case 1: n is even
-	// | x1 |   | b a ... a a | | y1 |   | a a ... a a | | y1 |   | y1 |
-	// | x2 |   | a b ... a a | | y2 |   | a a ... a a | | y2 |   | y2 |
-	// | x3 | = | ... ... ... | | y3 | = | ... ... ... | | y3 | + | y3 |
-	// | .. |   | a a ... b a | | .. |   | a a ... a a | | .. |   | .. |
-	// | xn |   | a a ... a a | | yn |   | a a ... a a | | yn |   | 0  |
-	// Case 2: n is odd
-	// | x1 |   | a b ... b b | | y1 |   | b b ... b b | | y1 |   | y1 |
-	// | x2 |   | b a ... b b | | y2 |   | b b ... b b | | y2 |   | y2 |
-	// | x3 | = | ... ... ... | | y3 | = | ... ... ... | | y3 | + | y3 |
-	// | .. |   | b b ... a b | | .. |   | b b ... b b | | .. |   | .. |
-	// | xn |   | b b ... b b | | yn |   | b b ... b b | | yn |   | 0  |
-
-	GF := galoisfield.Default
-	a := GF.Exp(85)
-	b := GF.Exp(170)
-	ret := make([]byte, n)
-	for i := 0; i < n; i++ {
-		ret[n-1] = GF.Add(ret[n-1], bytes[i])
-	}
-	if n%2 == 0 {
-		ret[n-1] = GF.Mul(ret[n-1], a)
-	} else {
-		ret[n-1] = GF.Mul(ret[n-1], b)
-	}
-	for i := 0; i < n-1; i++ {
-		ret[i] = GF.Add(ret[n-1], bytes[i])
-	}
-	return ret
-
 }
