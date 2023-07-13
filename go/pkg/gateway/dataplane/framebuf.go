@@ -16,6 +16,7 @@
 package dataplane
 
 import (
+	"container/list"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -194,16 +195,20 @@ type frameBufGroup struct {
 	// The number of frames we get
 	frameCnt uint8
 	// The frames with the same groupSeqNr
-	frames []*frameBuf
+	frames *list.List
 	// The combined frame
 	combined *frameBuf
 	// Is the group combined
 	isCombined bool
 }
 
+func GetPathIndex(fb *frameBuf) uint8 {
+	return uint8(fb.seqNr & 0xff)
+}
+
 func NewFrameBufGroup(fb *frameBuf, numPaths uint8) *frameBufGroup {
 	groupSeqNr := fb.seqNr >> 8
-	pathIndex := uint8(fb.seqNr & 0xff)
+	pathIndex := GetPathIndex(fb)
 	if pathIndex >= numPaths {
 		// Error: path index out of bound
 		return nil
@@ -212,20 +217,19 @@ func NewFrameBufGroup(fb *frameBuf, numPaths uint8) *frameBufGroup {
 		groupSeqNr: groupSeqNr,
 		numPaths:   numPaths,
 		frameCnt:   1,
-		frames:     make([]*frameBuf, numPaths),
+		frames:     list.New(),
 		combined:   &frameBuf{raw: make([]byte, frameBufCap*int(numPaths))},
 		isCombined: false,
 	}
-	fbg.frames[pathIndex] = fb
+	fbg.frames.PushBack(fb)
+	// fbg.frames[pathIndex] = fb
 	fbg.combined.Reset()
 	return fbg
 }
 
 func (fbg *frameBufGroup) Release() {
-	for i := 0; i < int(fbg.numPaths); i++ {
-		if fbg.frames[i] != nil {
-			fbg.frames[i].Release()
-		}
+	for e := fbg.frames.Front(); e != nil; e = e.Next() {
+		e.Value.(*frameBuf).Release()
 	}
 }
 
@@ -238,7 +242,7 @@ func (fbg *frameBufGroup) TryAndCombine() bool {
 	}
 	// combine
 	frame := fbg.combined
-	ref := fbg.frames[0]
+	ref := fbg.frames.Front().Value.(*frameBuf)
 	frame.index = ref.index
 	frame.seqNr = ref.seqNr
 	frame.snd = ref.snd
@@ -246,16 +250,19 @@ func (fbg *frameBufGroup) TryAndCombine() bool {
 
 	n := int(fbg.numPaths)
 	currBytes := make([]byte, n)
-	for i := 0; i < ref.frameLen - hdrLen; i++ {
-		for j := 0; j < n; j++ {
-			currBytes[j] = fbg.frames[j].raw[hdrLen+i]
+	for i := 0; i < ref.frameLen-hdrLen; i++ {
+		for j, e := 0, fbg.frames.Front(); e != nil; e, j = e.Next(), j+1 {
+			currBytes[j] = e.Value.(*frameBuf).raw[hdrLen+i]
 		}
+		// for j := 0; j < n; j++ {
+		// 	currBytes[j] = fbg.frames[j].raw[hdrLen+i]
+		// }
 		copy(frame.raw[hdrLen+n*i:hdrLen+n*(i+1)], AONTDecode(currBytes))
 	}
 
 	// I think we don't need to unpad
 	// because there will not be another packet after the padding
-	frame.frameLen = (ref.frameLen - hdrLen) * n + hdrLen
+	frame.frameLen = (ref.frameLen-hdrLen)*n + hdrLen
 	fbg.isCombined = true
 
 	return true

@@ -89,10 +89,10 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 	}
 	last := l.entries.Back()
 	lastFrameGroup := last.Value.(*frameBufGroup)
-	
+
 	// If there is a gap between this frame and the last in the reassembly list,
 	// remove all packets from the reassembly list and only add this frame.
-	if groupSeqNr > lastFrameGroup.groupSeqNr + 1 {
+	if groupSeqNr > lastFrameGroup.groupSeqNr+1 {
 		logger.Debug(fmt.Sprintf("Detected dropped frameGroup(s). Discarding %d frames.",
 			l.entries.Len()), "epoch", l.epoch, "groupSegNr", groupSeqNr,
 			"currentNewest", lastFrameGroup.groupSeqNr)
@@ -109,7 +109,7 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 		first = last
 		firstFrameGroup = first.Value.(*frameBufGroup)
 	}
-	
+
 	// Check if the frame belongs to old group.
 	if groupSeqNr >= firstFrameGroup.groupSeqNr && groupSeqNr <= lastFrameGroup.groupSeqNr {
 		// Find the frame with the same groupSeqNr
@@ -126,22 +126,34 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 			frame.Release()
 			return
 		}
-		frameIndex := uint8(frame.seqNr & 0xff)
+		frameIndex := GetPathIndex(frame)
 		if frameIndex >= currFrameGroup.numPaths {
 			logger.Error(fmt.Sprintf("Cannot assign path index %d for %d paths.", frameIndex, currFrameGroup.numPaths))
 			return
 		}
-		if currFrameGroup.frames[frameIndex] != nil {
-			logger.Debug("Received duplicate frame.", "epoch", l.epoch, "seqNr", frame.seqNr)
-			increaseCounterMetric(l.duplicate, 1)
-			return
+		frameInserted := false
+		for e := currFrameGroup.frames.Front(); e != nil; e = e.Next() {
+			currFrame := e.Value.(*frameBuf)
+			currFrameIndex := GetPathIndex(currFrame)
+			if currFrameIndex == frameIndex {
+				logger.Debug("Received duplicate frame.", "epoch", l.epoch, "seqNr", frame.seqNr)
+				increaseCounterMetric(l.duplicate, 1)
+				return
+			}
+			if currFrameIndex > frameIndex {
+				frameInserted = true
+				currFrameGroup.frames.InsertBefore(frame, e)
+				break
+			}
 		}
-		currFrameGroup.frames[frameIndex] = frame
+		if !frameInserted {
+			currFrameGroup.frames.PushBack(frame)
+		}
 		currFrameGroup.frameCnt++
 	}
-	
+
 	// Check if the frame belongs to next group
-	if groupSeqNr == lastFrameGroup.groupSeqNr + 1 {
+	if groupSeqNr == lastFrameGroup.groupSeqNr+1 {
 		l.insertNewGroup(frame)
 	}
 	l.tryReassemble(ctx)
