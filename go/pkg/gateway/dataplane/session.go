@@ -188,7 +188,7 @@ func (s *Session) SetPaths(paths []snet.Path) error {
 	s.senders = newSenders
 
 	// Re-compute MTU sum after selecting the senders
-	minMtu := s.senders[0].Mtu
+	minMtu := 65536
 	for _, sender := range s.senders {
 		if sender.Mtu < minMtu {
 			minMtu = sender.Mtu
