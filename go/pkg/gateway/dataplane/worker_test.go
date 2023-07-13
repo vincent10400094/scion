@@ -15,7 +15,6 @@
 package dataplane
 
 import (
-	"container/list"
 	"context"
 	"net"
 	"testing"
@@ -68,34 +67,28 @@ func SendFrame(t *testing.T, w *worker, data []byte) {
 
 func Split(data []byte, n int) [][]byte {
 	splits := make([][]byte, n)
-	availableFrames := list.New()
+	dataLen := (len(data)+n-1-hdrLen)/n
 	for i := 0; i < n; i++ {
-		splits[i] = make([]byte, 0, 1000)
-		splits[i] = append(splits[i], data[:hdrLen-1]...)
-		splits[i] = append(splits[i], uint8(i))
-		availableFrames.PushBack(i)
+		splits[i] = make([]byte, hdrLen+dataLen)
+		copy(splits[i], data[:hdrLen-1])
+		splits[i][hdrLen-1] = uint8(i)
 	}
-
-	payload := data[hdrLen:]
-	now := 0
-	for now+availableFrames.Len() <= len(payload) {
-		currBytes := AONTEncode(payload[now : now+availableFrames.Len()])
-		now += availableFrames.Len()
-		cnt := 0
-		for aFrame := availableFrames.Front(); aFrame != nil; aFrame = aFrame.Next() {
-			splitId := aFrame.Value.(int)
-			splits[splitId] = append(splits[splitId], currBytes[cnt])
-			cnt++
+	now := hdrLen
+	for i := 0; i < dataLen - 1; i++ {
+		currBytes := AONTEncode(data[now:now+n])
+		for j := 0; j < n; j++ {
+			splits[j][hdrLen+i] = currBytes[j]
 		}
+		now += n
 	}
-	currBytes := AONTEncode(payload[now:])
-	aFrame := availableFrames.Front()
-	for cnt := 0; cnt < len(currBytes); cnt++ {
-		splitId := aFrame.Value.(int)
-		splits[splitId] = append(splits[splitId], currBytes[cnt])
-		aFrame = aFrame.Next()
+	// The left bytes, maybe less than n bytes
+	// just pad 0
+	currBytes := make([]byte, n)
+	copy(currBytes, data[now:])
+	currBytes = AONTEncode(currBytes)
+	for i := 0; i < n; i++ {
+		splits[i][hdrLen+dataLen-1] = currBytes[i]
 	}
-
 	return splits
 }
 
@@ -360,27 +353,6 @@ func TestParsing(t *testing.T) {
 		0x40, 0, 0, 30, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		// Payload.
 		51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
-	})
-	mt.AssertDone(t)
-
-	// Only 1 path. The other frame should be empty (only SIG header)
-	SendFrame(t, w, []byte{
-		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 0,
-		// IPv4 header.
-		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		// Payload.
-		101, 102, 103,
-	})
-	SendFrame(t, w, []byte{
-		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 7, 1,
-	})
-	mt.AssertPacket(t, []byte{
-		// IPv4 header.
-		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		// Payload.
-		101, 102, 103,
 	})
 	mt.AssertDone(t)
 }

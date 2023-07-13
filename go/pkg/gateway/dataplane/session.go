@@ -15,7 +15,6 @@
 package dataplane
 
 import (
-	"container/list"
 	"encoding/binary"
 	"fmt"
 	"hash/crc64"
@@ -189,10 +188,13 @@ func (s *Session) SetPaths(paths []snet.Path) error {
 	s.senders = newSenders
 
 	// Re-compute MTU sum after selecting the senders
-	mtuSum := hdrLen
-	for _, s := range s.senders {
-		mtuSum += (s.Mtu - hdrLen)
+	minMtu := s.senders[0].Mtu
+	for _, sender := range s.senders {
+		if sender.Mtu < minMtu {
+			minMtu = sender.Mtu
+		}
 	}
+	mtuSum := (minMtu - hdrLen) * len(s.senders) + hdrLen
 	s.currentMtuSum = mtuSum
 	s.encoder.ChangeFrameSize(mtuSum)
 
@@ -216,39 +218,26 @@ func (s *Session) run() {
 // Split frame with each path's MTU .
 func (s *Session) splitAndSend(frame []byte) {
 	n := len(s.senders)
+	dataLen := (len(frame)+n-1-hdrLen)/n
 	splits := make([][]byte, n)
-	availableFrames := list.New()
 	for i := 0; i < n; i++ {
-		splits[i] = make([]byte, 0, s.senders[i].Mtu)
-		availableFrames.PushBack(i)
+		splits[i] = make([]byte, dataLen)
 	}
-
-	payload := frame[hdrLen:]
-	now := 0
-	for now+availableFrames.Len() <= len(payload) {
-		currBytes := AONTEncode(payload[now : now+availableFrames.Len()])
-		now += availableFrames.Len()
-		cnt := 0
-		removedFrame := make([]*list.Element, 0)
-		for aFrame := availableFrames.Front(); aFrame != nil; aFrame = aFrame.Next() {
-			splitId := aFrame.Value.(int)
-			splits[splitId] = append(splits[splitId], currBytes[cnt])
-			if len(splits[splitId]) >= s.senders[splitId].Mtu {
-				// full
-				removedFrame = append(removedFrame, aFrame)
-			}
-			cnt++
+	now := hdrLen
+	for i := 0; i < dataLen - 1; i++ {
+		currBytes := AONTEncode(frame[now:now+n])
+		for j := 0; j < n; j++ {
+			splits[j][i] = currBytes[j]
 		}
-		for i := 0; i < len(removedFrame); i++ {
-			availableFrames.Remove(removedFrame[i])
-		}
+		now += n
 	}
-	currBytes := AONTEncode(payload[now:])
-	aFrame := availableFrames.Front()
-	for cnt := 0; cnt < len(currBytes); cnt++ {
-		splitId := aFrame.Value.(int)
-		splits[splitId] = append(splits[splitId], currBytes[cnt])
-		aFrame = aFrame.Next()
+	// The left bytes, maybe less than n bytes
+	// just pad 0
+	currBytes := make([]byte, n)
+	copy(currBytes, frame[now:])
+	currBytes = AONTEncode(currBytes)
+	for i := 0; i < n; i++ {
+		splits[i][dataLen-1] = currBytes[i]
 	}
 
 	// Send each split with respective path

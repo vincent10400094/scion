@@ -16,7 +16,6 @@
 package dataplane
 
 import (
-	"container/list"
 	"context"
 	"encoding/binary"
 	"fmt"
@@ -245,31 +244,19 @@ func (fbg *frameBufGroup) TryAndCombine() bool {
 	frame.snd = ref.snd
 	copy(frame.raw[:hdrLen], ref.raw[:hdrLen])
 
-	unfunishedFrames := list.New()
-	for i := 0; i < int(fbg.numPaths) && fbg.frames[i].frameLen > hdrLen; i++ {
-		unfunishedFrames.PushBack(i)
+	n := int(fbg.numPaths)
+	currBytes := make([]byte, n)
+	for i := 0; i < ref.frameLen - hdrLen; i++ {
+		for j := 0; j < n; j++ {
+			currBytes[j] = fbg.frames[j].raw[hdrLen+i]
+		}
+		copy(frame.raw[hdrLen+n*i:hdrLen+n*(i+1)], AONTDecode(currBytes))
 	}
 
-	now, frameLen := hdrLen, hdrLen
-	for unfunishedFrames.Len() > 0 {
-		n := unfunishedFrames.Len()
-		currBytes := make([]byte, 0)
-		removedFrame := make([]*list.Element, 0)
-		for uFrame := unfunishedFrames.Front(); uFrame != nil; uFrame = uFrame.Next() {
-			frameId := uFrame.Value.(int)
-			currBytes = append(currBytes, fbg.frames[frameId].raw[now])
-			if fbg.frames[frameId].frameLen <= now+1 {
-				removedFrame = append(removedFrame, uFrame)
-			}
-		}
-		for i := 0; i < len(removedFrame); i++ {
-			unfunishedFrames.Remove(removedFrame[i])
-		}
-		now++
-		copy(frame.raw[frameLen:frameLen+n], AONTDecode(currBytes))
-		frameLen += n
-	}
+	// I think we don't need to unpad
+	// because there will not be another packet after the padding
+	frame.frameLen = (ref.frameLen - hdrLen) * n + hdrLen
+	fbg.isCombined = true
 
-	frame.frameLen = frameLen
 	return true
 }
