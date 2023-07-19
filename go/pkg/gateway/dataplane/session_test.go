@@ -38,7 +38,7 @@ func TestNoPath(t *testing.T) {
 
 	frameChan := make(chan ([]byte))
 	sess := createSession(t, ctrl, frameChan)
-	sendPackets(t, sess, 22, 10)
+	sendPackets(t, sess, 28, 10)
 	// No path was set. Make sure that no frames are generated.
 	waitFrames(t, frameChan, 0, 0)
 	sess.Close()
@@ -51,8 +51,8 @@ func TestSinglePath(t *testing.T) {
 	frameChan := make(chan ([]byte))
 	sess := createSession(t, ctrl, frameChan)
 	sess.SetPaths([]snet.Path{createMockPath(ctrl, 200)})
-	sendPackets(t, sess, 22, 10)
-	waitFrames(t, frameChan, 22, 10)
+	sendPackets(t, sess, 28, 10)
+	waitFrames(t, frameChan, 28, 10)
 	sess.Close()
 }
 
@@ -67,18 +67,18 @@ func TestTwoPaths(t *testing.T) {
 	sess := createSession(t, ctrl, frameChan)
 
 	sess.SetPaths([]snet.Path{createMockPath(ctrl, 200)})
-	sendPackets(t, sess, 22, 10)
+	sendPackets(t, sess, 28, 10)
 
 	// Reuse the same path, thus reusing the sender.
 	sess.SetPaths([]snet.Path{createMockPath(ctrl, 200)})
-	sendPackets(t, sess, 22, 10)
+	sendPackets(t, sess, 28, 10)
 
 	// The previous packets are not yet sent, yet we set a new path thus creating a new
 	// sender. The goal is to test that the old packets will still be sent out.
 	// The MTU is used to differentiate the paths
 	sess.SetPaths([]snet.Path{createMockPath(ctrl, 202)})
-	sendPackets(t, sess, 22, 10)
-	waitFrames(t, frameChan, 22, 30)
+	sendPackets(t, sess, 28, 10)
+	waitFrames(t, frameChan, 28, 30)
 
 	sess.Close()
 }
@@ -99,8 +99,8 @@ func TestThreePaths(t *testing.T) {
 		createMockPath(ctrl, 201),
 		createMockPath(ctrl, 202),
 	})
-	sendPackets(t, sess, 22, 30)
-	waitFrames(t, frameChan, 22, 30)
+	sendPackets(t, sess, 28, 30)
+	waitFrames(t, frameChan, 28, 30)
 	sess.Close()
 }
 
@@ -117,7 +117,7 @@ func TestNoLeak(t *testing.T) {
 	// E.g. if iterations is set to 10, some packets are lost due
 	// to the ringbuffer not being large enough
 	iterations := 5
-	payloadLen := 22
+	payloadLen := 28
 	batchSize := 10
 
 	for i := 0; i < iterations; i++ {
@@ -156,7 +156,7 @@ func createSession(t *testing.T, ctrl *gomock.Controller, frameChan chan []byte)
 func sendPackets(t *testing.T, sess *Session, payloadSize int, pktCount int) {
 	bytes := append([]byte{
 		// IPv4 header.
-		0x40, 0, 0, 42, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+		0x40, 0, 0, 48, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 	}, make([]byte, payloadSize)...)
 	decodeOptions := gopacket.DecodeOptions{
 		NoCopy: true,
