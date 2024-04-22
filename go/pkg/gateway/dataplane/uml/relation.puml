@@ -1,0 +1,23 @@
+@startuml relation
+
+
+dataplane.DiagnosticsWriter <|-- dataplane.RoutingTable
+dataplane.ingressSender <|-- dataplane.worker
+
+dataplane.Session "1" *-- "many" dataplane.sender
+dataplane.Session *-- dataplane.encoder
+dataplane.Session *-- dataplane.SessionMetrics
+dataplane.frameBufGroup "1" *-- "many" dataplane.frameBuf
+
+dataplane.IngressServer "1" *-- "many" dataplane.worker
+dataplane.IngressServer  *--  dataplane.IngressMetrics
+
+
+dataplane.worker *-- dataplane.reassemblyList
+' Not sure the right relation
+dataplane.reassemblyList *-- dataplane.frameBufGroup
+
+
+dataplane.sender "1" *-- "1" dataplane.pktRing
+
+@enduml

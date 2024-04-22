@@ -1,0 +1,287 @@
+@startuml dataplane
+
+!include relation.puml
+
+namespace dataplane {
+    class AtomicRoutingTable << (S,Aquamarine) >> {
+        - mtx sync.RWMutex
+        - table control.RoutingTable
+
+        - getPointer() control.RoutingTable
+
+        + RouteIPv4(packet layers.IPv4) control.PktWriter
+        + RouteIPv6(packet layers.IPv6) control.PktWriter
+        + SetRoutingTable(table control.RoutingTable) io.Closer
+
+    }
+    interface DiagnosticsWriter  {
+        + DiagnosticsWrite( io.Writer) 
+
+    }
+    class IPForwarder << (S,Aquamarine) >> {
+        + Reader io.Reader
+        + RoutingTable control.RoutingTableReader
+        + Metrics IPForwarderMetrics
+
+        - validate() error
+        - initMetrics() 
+
+        + Run(ctx context.Context) error
+
+    }
+    class IPForwarderMetrics << (S,Aquamarine) >> {
+        + IPPktBytesLocalRecv metrics.Counter
+        + IPPktsLocalRecv metrics.Counter
+        + IPPktsNoRoute metrics.Counter
+        + IPPktsInvalid metrics.Counter
+        + IPPktsFragmented metrics.Counter
+        + ReceiveLocalErrors metrics.Counter
+
+    }
+    class IngressMetrics << (S,Aquamarine) >> {
+        + IPPktBytesRecv metrics.Counter
+        + IPPktsRecv metrics.Counter
+        + IPPktBytesLocalSent metrics.Counter
+        + IPPktsLocalSent metrics.Counter
+        + FrameBytesRecv metrics.Counter
+        + FramesRecv metrics.Counter
+        + FramesDiscarded metrics.Counter
+        + SendLocalError metrics.Counter
+        + ReceiveExternalError metrics.Counter
+
+    }
+    class IngressServer << (S,Aquamarine) >> {
+        - workers <font color=blue>map</font>[string]*worker
+
+        + Conn ReadConn
+        + DeviceManager control.DeviceManager
+        + Metrics IngressMetrics
+
+        - read(ctx context.Context) error
+        - dispatch(ctx context.Context, frame *frameBuf, src *snet.UDPAddr) 
+        - cleanup() 
+
+        + Run(ctx context.Context) error
+
+    }
+    interface PathStatsPublisher  {
+        + PublishEgressStats(fingerprint string, frames int64, bytes int64) 
+
+    }
+    interface ReadConn  {
+        + ReadFrom(b []byte) (int, net.Addr, error)
+
+    }
+    class RoutingTable << (S,Aquamarine) >> {
+        - indexToSubEntry <font color=blue>map</font>[int]*subEntry
+        - indexToEntries <font color=blue>map</font>[int][]*entry
+        - table []*entry
+
+        - route(dst net.IP, pkt gopacket.Layer) control.PktWriter
+
+        + DiagnosticsWrite(w io.Writer) 
+        + RouteIPv4(pkt layers.IPv4) control.PktWriter
+        + RouteIPv6(pkt layers.IPv6) control.PktWriter
+        + SetSession(index int, session control.PktWriter) error
+        + ClearSession(index int) error
+        + Close() error
+
+    }
+    class Session << (S,Aquamarine) >> {
+        - mutex sync.Mutex
+        - senders []*sender
+        - encoder *encoder
+        - currentMtuSum int
+        - seq uint64
+
+        + SessionID uint8
+        + GatewayAddr net.UDPAddr
+        + DataPlaneConn net.PacketConn
+        + PathStatsPublisher PathStatsPublisher
+        + Metrics SessionMetrics
+
+        - run() 
+        - splitAndSend_aont_rs(frame []byte) 
+        - splitAndSend(frame []byte) 
+        - encodeFrame(pkt []byte, index uint16, streamID uint32, pathId uint8) []byte
+
+        + Close() 
+        + Write(packet gopacket.Packet) 
+        + String() string
+        + SetPaths(paths []snet.Path) error
+
+    }
+    class SessionMetrics << (S,Aquamarine) >> {
+        + IPPktsSent metrics.Counter
+        + IPPktBytesSent metrics.Counter
+        + FramesSent metrics.Counter
+        + FrameBytesSent metrics.Counter
+        + SendExternalErrors metrics.Counter
+
+    }
+    class encoder << (S,Aquamarine) >> {
+        - sessionID uint8
+        - streamID uint32
+        - ring *pktRing
+        - seq uint64
+        - pkt []byte
+        - frame []byte
+        - frameMtx sync.Mutex
+
+        - copyToFrame() int
+
+        + Close() 
+        + Write(pkt []byte) 
+        + Read() []byte
+        + Lock() 
+        + Unlock() 
+        + ChangeFrameSize(mtu int) 
+
+    }
+    class entry << (S,Aquamarine) >> {
+        + Prefix *net.IPNet
+        + Table []*subEntry
+
+        - route(pkt gopacket.Layer) control.PktWriter
+
+        + String() string
+
+    }
+    class frameBuf << (S,Aquamarine) >> {
+        - sessId uint8
+        - seqNr uint64
+        - index int
+        - frameLen int
+        - frag0Start int
+        - frag0Processed bool
+        - fragNProcessed bool
+        - completePktsProcessed bool
+        - pktLen int
+        - raw []byte
+        - snd ingressSender
+
+        + Reset() 
+        + Release() 
+        + ProcessCompletePkts(ctx context.Context) 
+        + Processed() bool
+        + SetProcessed() 
+        + String() string
+
+    }
+    class frameBufGroup << (S,Aquamarine) >> {
+        - groupSeqNr uint64
+        - numPaths uint8
+        - frameCnt uint8
+        - frames *list.List
+        - combined *frameBuf
+        - isCombined bool
+
+        + Release() 
+        + TryAndCombine() bool
+
+    }
+    interface ingressSender  {
+        - send( []byte) error
+
+    }
+    class pktRing << (S,Aquamarine) >> {
+        - ring *ringbuf.Ring
+        - storage []ringbuf.Entry
+        - entries []ringbuf.Entry
+
+        + Write(pkt []byte, block bool) int
+        + Read(block bool) ([]byte, int)
+        + Close() 
+
+    }
+    class reassemblyList << (S,Aquamarine) >> {
+        - epoch int
+        - capacity int
+        - numPaths uint8
+        - snd ingressSender
+        - markedForDeletion bool
+        - entries *list.List
+        - buf *bytes.Buffer
+        - tooOld metrics.Counter
+        - duplicate metrics.Counter
+        - evicted metrics.Counter
+        - invalid metrics.Counter
+
+        - insertNewGroup(frame *frameBuf) 
+        - tryReassemble(ctx context.Context) 
+        - collectAndWrite(ctx context.Context) 
+        - removeEntry(e *list.Element) 
+        - removeProcessed() 
+        - removeAll() 
+        - removeBefore(ele *list.Element) 
+        - printInfo() 
+
+        + Insert(ctx context.Context, frame *frameBuf) 
+
+    }
+    class sender << (S,Aquamarine) >> {
+        - ring *pktRing
+        - conn net.PacketConn
+        - address net.Addr
+        - pathStatsPublisher PathStatsPublisher
+        - path snet.Path
+        - pathFingerprint snet.PathFingerprint
+        - metrics SessionMetrics
+
+        + Mtu int
+
+        - run() 
+
+        + Close() 
+        + Write(pkt []byte) 
+
+    }
+    class subEntry << (S,Aquamarine) >> {
+        + Class pktcls.Cond
+        + Session control.PktWriter
+
+        + String() string
+
+    }
+    class worker << (S,Aquamarine) >> {
+        - numPaths uint8
+        - rlists <font color=blue>map</font>[int]*reassemblyList
+        - markedForCleanup bool
+        - tunIO io.WriteCloser
+
+        + Remote *snet.UDPAddr
+        + SessID uint8
+        + Ring *ringbuf.Ring
+        + Metrics IngressMetrics
+
+        - processFrame(ctx context.Context, frame *frameBuf) 
+        - getRlist(epoch int) *reassemblyList
+        - cleanup() 
+        - send(packet []byte) error
+        - adjustCtx(ctx context.Context) (context.Context, log.Logger)
+
+        + Stop() 
+        + Run(ctx context.Context) 
+
+    }
+}
+
+' dataplane.DiagnosticsWriter <|-- dataplane.RoutingTable
+' dataplane.ingressSender <|-- dataplane.worker
+
+' dataplane.Session "1" *-- "many" dataplane.sender
+' dataplane.Session *-- dataplane.encoder
+' dataplane.Session *-- dataplane.SessionMetrics
+' dataplane.frameBufGroup "1" *-- "many" dataplane.frameBuf
+
+' dataplane.IngressServer "1" *-- "many" dataplane.worker
+' dataplane.IngressServer  *--  dataplane.IngressMetrics
+
+
+' dataplane.worker *-- dataplane.reassemblyList
+' ' Not sure the right relation
+' dataplane.reassemblyList *-- dataplane.frameBufGroup
+
+
+' dataplane.sender "1" *-- "1" dataplane.pktRing
+@enduml
