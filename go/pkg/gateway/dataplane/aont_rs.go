@@ -2,129 +2,141 @@ package dataplane
 
 import (
 	"crypto/aes"
-	"crypto/cipher"
+	// "crypto/cipher"
 	"crypto/rand"
+	"fmt"
+	// "encoding/hex"
+	"encoding/binary"
+	"github.com/andreburgaud/crypt2go/padding"
+	"crypto/sha256"
+	"github.com/klauspost/reedsolomon"
+	"reflect"
 
-	"github.com/cloud9-tools/go-galoisfield"
 )
 
-// Galoas field for all-or-nothing transform
-var (
-	GF   = galoisfield.Default
-	GF_a = GF.Exp(85)
-	GF_b = GF.Exp(170)
-)
+var padder = padding.NewPkcs7Padding(16)
+var canary_block []byte = []byte{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
 
+func AONT_RS_Encode(message []byte, nb_data_shards int, nb_parties_shards int ) [][]byte{
+	return RS_Encode(AONT_Encode(message), nb_data_shards, nb_parties_shards)
+}
 
-
-func AONT_RSEncode(bytes []byte) []byte{
+func AONT_Encode(message []byte) []byte{
 	// Use the notation of the paper AONT-RS
-
-
-	// Load your secret key from a safe place and reuse it across multiple
-	// NewCipher calls. (Obviously don't use this example key for anything
-	// real.) If you want to convert a passphrase to a key, use a suitable
-	// package like bcrypt or scrypt.
-	key, _ := hex.DecodeString("6368616e676520746869732070617373")
-	plaintext := []byte("some plaintext")
-
-	block, err := aes.NewCipher(key)
+	key := make([]byte, 2*aes.BlockSize)
+	_, err := rand.Read(key)
 	if err != nil {
 		panic(err)
 	}
 
-	// The IV needs to be unique, but not secure. Therefore it's common to
-	// include it at the beginning of the ciphertext.
-	ciphertext := make([]byte, len(plaintext))
-	// iv := ciphertext[:aes.BlockSize]
-	iv = make([]bytes, aes.BlockSize)
-	// if _, err := io.ReadFull(rand.Reader, iv); err != nil {
-	// 	panic(err)
-	// }
+	// padding message
 
-	stream := cipher.NewCTR(block, iv)
-	stream.XORKeyStream(ciphertext, plaintext)
-	fmt.Printf("%s\n", ciphertext)
+	aes_block, err := aes.NewCipher(key)
+	if err != nil {
+		panic(err)
+	}
 
-	// It's important to remember that ciphertexts must be authenticated
-	// (i.e. by using crypto/hmac) as well as being encrypted in order to
-	// be secure.
 
-	// CTR mode is the same for both encryption and decryption, so we can
-	// also decrypt that ciphertext with NewCTR.
-	//
-	// plaintext2 := make([]byte, len(plaintext))
-	// stream = cipher.NewCTR(block, iv)
-	// stream.XORKeyStream(plaintext2, ciphertext[aes.BlockSize:])
+	// Padding message into multiple of 16 Using PKC#7
+	p_message, err := padder.Pad(message)
+	if err != nil{
+		panic(err)
+	}
+	s := len(p_message) / aes.BlockSize
 
-	fmt.Printf("%s\n", plaintext2)
+	// canary block, the canary block is set to be zeros
+	// | p_message | canary(16 bytes) | key (32 bytes) |
+	// d0, d1,...ds-1, ds(canary), ds+1, ds+2
+	encoded_text := make([]byte, len(p_message) + 3*aes.BlockSize)
+	copy(encoded_text, p_message)
+	copy(encoded_text[len(p_message):], canary_block)
 
-	// processe block of 16 bytes
+
+	// encoding
+	for i:=0; i<=s; i++ {
+		mask := make([]byte, aes.BlockSize)
+		binary.BigEndian.PutUint64(mask, uint64(i+1))
+		// if err != nil {
+		// 	panic(err)
+		// }
+
+		aes_block.Encrypt(mask,mask)
+		for j:= 0; j<aes.BlockSize; j++ {
+			encoded_text[i*aes.BlockSize+j] ^= mask[j]
+		}
+	}
+	// compute c_{s+1}
+	var hash_value = sha256.Sum256(encoded_text[:(s+1)*aes.BlockSize])
+	copy(encoded_text[(s+1)*aes.BlockSize:], hash_value[:])
+
+	for j:=0; j < 2*aes.BlockSize; j++ {
+		encoded_text[(s+1)*aes.BlockSize+j] ^= key[j]
+	}
+	return encoded_text
+}
+
+func RS_Encode(encoded_text []byte, nb_data_shards int, nb_parties_shards int) [][]byte{
+	rs_enc, _ :=  reedsolomon.New(nb_data_shards,nb_parties_shards)
+	shards, _ := rs_enc.Split(encoded_text)
+	_ = rs_enc.Encode(shards)
+	ok, _ := rs_enc.Verify(shards)
+	if ok {
+		fmt.Println("ok")
+	}
+	return shards
+}
+
+
+
+func AONT_Decode(encoded_text []byte) []byte {
+	s := len(encoded_text) / aes.BlockSize - 3
+	hash_document := sha256.Sum256(encoded_text[:(s+1)*aes.BlockSize])
+	for j:=0; j < 2*aes.BlockSize; j++ {
+		encoded_text[(s+1)*aes.BlockSize+j] ^= hash_document[j]
+	}
+	aes_block, err := aes.NewCipher(encoded_text[(s+1)*aes.BlockSize:])
+	if err != nil {
+		panic(err)
+	}
+
+
+	// decoding
+	for i:=0; i<=s; i++ {
+		mask := make([]byte, aes.BlockSize)
+		binary.BigEndian.PutUint64(mask, uint64(i+1))
+		// if err != nil {
+		// 	panic(err)
+		// }
+
+		aes_block.Encrypt(mask,mask)
+		for j:= 0; j<aes.BlockSize; j++ {
+			encoded_text[i*aes.BlockSize+j] ^= mask[j]
+		}
+	}
+
+	// veryfy canary
+	if !reflect.DeepEqual(encoded_text[s*aes.BlockSize:(s+1)*aes.BlockSize],
+		canary_block){
+		fmt.Println("Canary integrety not good")
+	}
+
+	message, err := padder.Unpad(encoded_text[:s*aes.BlockSize])
+	if err != nil{
+		panic(err)
+	}
+
+	return message
 
 }
 
-func AONT_RSDecode(bytes []byte) []byte{
-}
+// func RS_Decode(encoded_shard [][]byte) []byte{
+// 	return "
+// }
 
-func AONTEncode(bytes []byte) []byte {
-	n := len(bytes)
-	if n <= 1 {
-		// AONT is not applied
-		return bytes
-	}
-
-	// Default: GF(256)
-	// a in GF(256) where a^2 = a + 1
-	// AONT encoder is actually a matrix muliplication:
-	// | y1 |   | 1 0 ... 0 1 | | x1 |
-	// | y2 |   | 0 1 ... 0 1 | | x2 |
-	// | y3 | = | ... ... ... | | x3 |
-	// | .. |   | 0 0 ... 1 1 | | .. |
-	// | yn |   | 1 1 ... 1 a | | xn |
-	cum := GF.Mul(GF_a, bytes[n-1])
-	for i := 0; i < n-1; i++ {
-		cum = GF.Add(cum, bytes[i])
-		bytes[i] = GF.Add(bytes[i], bytes[n-1])
-	}
-	bytes[n-1] = cum
-	return bytes
-}
-
-func AONTDecode(bytes []byte) []byte {
-	n := len(bytes)
-	if n <= 1 {
-		// AONT is not applied
-		return bytes
-	}
-
-	// Default: GF(256)
-	// a, b in GF(256) where b = a^2 = a + 1
-	// Similarly, we also have a = b^2 = b + 1
-	// AONT decoder is actually a matrix muliplication:
-	// Case 1: n is even
-	// | x1 |   | b a ... a a | | y1 |   | a a ... a a | | y1 |   | y1 |
-	// | x2 |   | a b ... a a | | y2 |   | a a ... a a | | y2 |   | y2 |
-	// | x3 | = | ... ... ... | | y3 | = | ... ... ... | | y3 | + | y3 |
-	// | .. |   | a a ... b a | | .. |   | a a ... a a | | .. |   | .. |
-	// | xn |   | a a ... a a | | yn |   | a a ... a a | | yn |   | 0  |
-	// Case 2: n is odd
-	// | x1 |   | a b ... b b | | y1 |   | b b ... b b | | y1 |   | y1 |
-	// | x2 |   | b a ... b b | | y2 |   | b b ... b b | | y2 |   | y2 |
-	// | x3 | = | ... ... ... | | y3 | = | ... ... ... | | y3 | + | y3 |
-	// | .. |   | b b ... a b | | .. |   | b b ... b b | | .. |   | .. |
-	// | xn |   | b b ... b b | | yn |   | b b ... b b | | yn |   | 0  |
-	cum := byte(0)
-	for i := 0; i < n; i++ {
-		cum = GF.Add(cum, bytes[i])
-	}
-	if n%2 == 0 {
-		cum = GF.Mul(cum, GF_a)
-	} else {
-		cum = GF.Mul(cum, GF_b)
-	}
-	for i := 0; i < n-1; i++ {
-		bytes[i] = GF.Add(cum, bytes[i])
-	}
-	bytes[n-1] = cum
-	return bytes
+func main(){
+	plaintext := []byte("some plaintext")
+	encoded := AONT_Encode(plaintext)
+	fmt.Println(encoded)
+	fmt.Println(plaintext)
+	fmt.Println(AONT_Decode(encoded))
 }
