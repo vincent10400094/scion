@@ -215,6 +215,57 @@ func (s *Session) run() {
 	}
 }
 
+// AONT-RS version of splitAndSend
+func (s *Session) splitAndSend_aont_rs(frame []byte) {
+	n := len(s.senders)
+	if n>=3 {
+		// The AONT_RS transfert a frame two 3 shards, the reciever need 2 out
+		// of 3 for recovering.
+		splits := AONT_RS_Encode(frame, 2, 1)
+		index := binary.BigEndian.Uint16(frame[indexPos : indexPos+2])
+		streamID := binary.BigEndian.Uint32(frame[streamPos : streamPos+4])
+
+		for i:=0; i<3; i++{
+			sender := s.senders[i]
+			encodedFrame := s.encodeFrame(splits[i], index, streamID, uint8(i))
+			sender.Write(encodedFrame)
+		}
+
+	}else{
+		dataLen := (len(frame)+n-1-hdrLen)/n
+		splits := make([][]byte, n)
+		for i := 0; i < n; i++ {
+			splits[i] = make([]byte, dataLen)
+		}
+		now := hdrLen
+		for i := 0; i < dataLen - 1; i++ {
+			currBytes := AONTEncode(frame[now:now+n])
+			for j := 0; j < n; j++ {
+				splits[j][i] = currBytes[j]
+			}
+			now += n
+		}
+		// The left bytes, maybe less than n bytes
+		// just pad 0
+		currBytes := make([]byte, n)
+		copy(currBytes, frame[now:])
+		currBytes = AONTEncode(currBytes)
+		for i := 0; i < n; i++ {
+			splits[i][dataLen-1] = currBytes[i]
+		}
+
+		// Send each split with respective path
+		index := binary.BigEndian.Uint16(frame[indexPos : indexPos+2])
+		streamID := binary.BigEndian.Uint32(frame[streamPos : streamPos+4])
+		for i := 0; i < n; i++ {
+			sender := s.senders[i]
+			encodedFrame := s.encodeFrame(splits[i], index, streamID, uint8(i))
+			sender.Write(encodedFrame)
+		}
+	}
+}
+
+
 // Split frame with each path's MTU .
 func (s *Session) splitAndSend(frame []byte) {
 	n := len(s.senders)
