@@ -1,6 +1,7 @@
 module github.com/scionproto/scion
 
 require (
+	github.com/andreburgaud/crypt2go v1.5.0
 	github.com/antlr/antlr4 v0.0.0-20181218183524-be58ebffde8e
 	github.com/bazelbuild/rules_go v0.29.0
 	github.com/buildkite/go-buildkite/v2 v2.8.1
@@ -22,6 +23,7 @@ require (
 	github.com/grpc-ecosystem/grpc-opentracing v0.0.0-20180507213350-8e809c8a8645
 	github.com/hashicorp/golang-lru v0.5.1
 	github.com/iancoleman/strcase v0.0.0-20190422225806-e506e3ef7365
+	github.com/klauspost/reedsolomon v1.12.1
 	github.com/lestrrat-go/jwx v1.2.7
 	github.com/lucas-clemente/quic-go v0.23.0
 	github.com/mattn/go-isatty v0.0.14
@@ -43,10 +45,10 @@ require (
 	github.com/xeipuuv/gojsonschema v1.2.0
 	go.uber.org/goleak v1.1.10
 	go.uber.org/zap v1.17.0
-	golang.org/x/crypto v0.0.0-20210921155107-089bfa567519
-	golang.org/x/net v0.0.0-20220127200216-cd36cc0744dd
-	golang.org/x/sync v0.0.0-20210220032951-036812b2e83c
-	golang.org/x/tools v0.1.5
+	golang.org/x/crypto v0.19.0
+	golang.org/x/net v0.10.0
+	golang.org/x/sync v0.1.0
+	golang.org/x/tools v0.6.0
 	google.golang.org/grpc v1.40.0
 	google.golang.org/grpc/examples v0.0.0-20210630181457-52546c5d89b7
 	google.golang.org/protobuf v1.27.1
@@ -74,6 +76,7 @@ require (
 	github.com/inconshreveable/mousetrap v1.0.0 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/jtolds/gls v4.20.0+incompatible // indirect
+	github.com/klauspost/cpuid/v2 v2.2.6 // indirect
 	github.com/lestrrat-go/backoff/v2 v2.0.8 // indirect
 	github.com/lestrrat-go/blackmagic v1.0.0 // indirect
 	github.com/lestrrat-go/httpcc v1.0.0 // indirect
@@ -107,14 +110,15 @@ require (
 	go4.org/intern v0.0.0-20210108033219-3eb7198706b2 // indirect
 	go4.org/unsafe/assume-no-moving-gc v0.0.0-20201222180813-1025295fd063 // indirect
 	golang.org/x/lint v0.0.0-20210508222113-6edffad5e616 // indirect
-	golang.org/x/mod v0.4.2 // indirect
-	golang.org/x/sys v0.0.0-20211216021012-1d35b9e2eb4e // indirect
-	golang.org/x/text v0.3.7 // indirect
-	golang.org/x/xerrors v0.0.0-20200804184101-5ec99f83aff1 // indirect
+	golang.org/x/mod v0.8.0 // indirect
+	golang.org/x/sys v0.17.0 // indirect
+	golang.org/x/text v0.14.0 // indirect
 	google.golang.org/genproto v0.0.0-20210828152312-66f60bf46e71 // indirect
 	gopkg.in/ini.v1 v1.63.2 // indirect
 	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
 	gopkg.in/yaml.v3 v3.0.0-20210107192922-496545a6307b // indirect
 )
 
-go 1.17
+go 1.22
+
+toolchain go1.22.2
