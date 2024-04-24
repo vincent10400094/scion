@@ -5,6 +5,7 @@ import (
 	// "crypto/cipher"
 	"crypto/rand"
 	"fmt"
+	"bytes"
 	// "encoding/hex"
 	"encoding/binary"
 	"github.com/andreburgaud/crypt2go/padding"
@@ -19,6 +20,10 @@ var canary_block []byte = []byte{0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15}
 
 func AONT_RS_Encode(message []byte, nb_data_shards int, nb_parties_shards int ) [][]byte{
 	return RS_Encode(AONT_Encode(message), nb_data_shards, nb_parties_shards)
+}
+
+func AONT_RS_Decode(shards [][]byte, nb_data_shards int, nb_parties_shards int) []byte{
+	return AONT_Decode(RS_Decode(shards, nb_data_shards, nb_parties_shards))
 }
 
 func AONT_Encode(message []byte) []byte{
@@ -88,6 +93,7 @@ func RS_Encode(encoded_text []byte, nb_data_shards int, nb_parties_shards int) [
 
 
 
+
 func AONT_Decode(encoded_text []byte) []byte {
 	s := len(encoded_text) / aes.BlockSize - 3
 	hash_document := sha256.Sum256(encoded_text[:(s+1)*aes.BlockSize])
@@ -114,7 +120,7 @@ func AONT_Decode(encoded_text []byte) []byte {
 		}
 	}
 
-	// veryfy canary
+	// verify canary
 	if !reflect.DeepEqual(encoded_text[s*aes.BlockSize:(s+1)*aes.BlockSize],
 		canary_block){
 		fmt.Println("Canary integrety not good")
@@ -129,9 +135,20 @@ func AONT_Decode(encoded_text []byte) []byte {
 
 }
 
-// func RS_Decode(encoded_shard [][]byte) []byte{
-// 	return "
-// }
+func RS_Decode(shards [][]byte, nb_data_shards int, nb_parties_shards int) []byte{
+	rs_enc, _ :=  reedsolomon.New(nb_data_shards,nb_parties_shards)
+	err := rs_enc.Reconstruct(shards)
+	if err != nil {
+		panic("Reconstruct error")
+	}
+	data_raw := make([]byte, len(shards[0])*nb_data_shards)
+	w := bytes.NewBuffer(data_raw)
+	err = rs_enc.Join(w, shards, len(data_raw))
+	if err!=nil{
+		panic("Join fail")
+	}
+	return data_raw
+}
 
 func main(){
 	plaintext := []byte("some plaintext")
