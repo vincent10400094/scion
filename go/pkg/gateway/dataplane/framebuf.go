@@ -267,3 +267,44 @@ func (fbg *frameBufGroup) TryAndCombine() bool {
 
 	return true
 }
+
+func (fbg *frameBufGroup) TryAndCombine_ANOT_RS() bool {
+	if fbg.isCombined {
+		return true
+	}
+
+	// We are using AONT-RS with 2 data shards and 1 parity shards
+	if fbg.frameCnt < 2  {
+		return false
+	}
+	// combine
+
+	// Header parts
+	frame := fbg.combined
+	ref := fbg.frames.Front().Value.(*frameBuf)
+	frame.index = ref.index
+	frame.seqNr = ref.seqNr
+	frame.snd = ref.snd
+	copy(frame.raw[:hdrLen], ref.raw[:hdrLen])
+
+
+	// 3 because 2 data shards + 1 parity shards
+	data := make([][]byte, 3)
+
+	for e:= fbg.frames.Front(); e != nil; e = e.Next(){
+		currFrameBuf := e.Value.(*frameBuf)
+		currPathIdx := GetPathIndex(currFrameBuf)
+		data[currPathIdx] = make([]byte, ref.frameLen-hdrLen)
+	}
+
+	copy(frame.raw[hdrLen:], AONT_RS_Decode(data,2,1))
+
+	frame.frameLen = (ref.frameLen-hdrLen)*2 + hdrLen
+	fbg.isCombined = true
+
+	// I think we don't need to unpad
+	// because there will not be another packet after the padding
+	frame.frameLen = (ref.frameLen-hdrLen)*2 + hdrLen
+
+	return true
+}
