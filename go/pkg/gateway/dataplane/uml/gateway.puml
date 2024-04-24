@@ -1,0 +1,187 @@
+@startuml gateway
+namespace gateway {
+    ' interface DataPlaneRunner  {
+    '     + StartIngress(scionNetwork *snet.SCIONNetwork, dataAddr *net.UDPAddr, deviceManager control.DeviceManager, metrics *Metrics) error
+    '     + NewDataPlaneSessionFactory(scionNetwork *snet.SCIONNetwork, dataClientIP net.IP, metrics *Metrics, reportCollector <font color=blue>interface</font>{}) control.DataplaneSessionFactory
+    '     + NewRoutingTableFactory() control.RoutingTableFactory
+
+    ' }
+    class DataplaneSessionFactory << (S,Aquamarine) >> {
+        + PacketConnFactory PacketConnFactory
+        + PathStatsPublisher dataplane.PathStatsPublisher
+        + Metrics dataplane.SessionMetrics
+
+        + New(id uint8, policyID int, remoteIA addr.IA, remoteAddr net.Addr) control.DataplaneSession
+
+    }
+    class Gateway << (S,Aquamarine) >> {
+        + ID string
+        + TrafficPolicyFile string
+        + RoutingPolicyFile string
+        + ControlClientIP net.IP
+        + ControlServerAddr *net.UDPAddr
+        + ServiceDiscoveryClientIP net.IP
+        + PathMonitorIP net.IP
+        + ProbeServerAddr *net.UDPAddr
+        + ProbeClientIP net.IP
+        + DataServerAddr *net.UDPAddr
+        + DataClientIP net.IP
+        + DataAddr *net.UDPAddr
+        + Dispatcher reliable.Dispatcher
+        + Daemon daemon.Connector
+        + RouteSourceIPv4 net.IP
+        + RouteSourceIPv6 net.IP
+        + TunnelName string
+        + RoutingTableReader control.RoutingTableReader
+        + RoutingTableSwapper control.RoutingTableSwapper
+        + ConfigReloadTrigger <font color=blue>chan</font> <font color=blue>struct</font>{}
+        + HTTPEndpoints service.StatusPages
+        + HTTPServeMux *http.ServeMux
+        + Metrics *Metrics
+
+        - diagnosticsSGRP(routePublisherFactory control.PublisherFactory, pub *control.ConfigPublisher) http.HandlerFunc
+
+        + Run(ctx context.Context) error
+
+    }
+    ' class MetricMeta << (S,Aquamarine) >> {
+    '     + Name string
+    '     + Help string
+    '     + Labels []string
+
+    '     + NewCounterVec() *prometheus.CounterVec
+    '     + NewGaugeVec() *prometheus.GaugeVec
+
+    ' }
+    ' class Metrics << (S,Aquamarine) >> {
+    '     + IPPktBytesSentTotal *prometheus.CounterVec
+    '     + IPPktBytesReceivedTotal *prometheus.CounterVec
+    '     + IPPktsSentTotal *prometheus.CounterVec
+    '     + IPPktsReceivedTotal *prometheus.CounterVec
+    '     + IPPktBytesLocalSentTotal *prometheus.CounterVec
+    '     + IPPktBytesLocalReceivedTotal *prometheus.CounterVec
+    '     + IPPktsLocalSentTotal *prometheus.CounterVec
+    '     + IPPktsLocalReceivedTotal *prometheus.CounterVec
+    '     + FrameBytesSentTotal *prometheus.CounterVec
+    '     + FrameBytesReceivedTotal *prometheus.CounterVec
+    '     + FramesSentTotal *prometheus.CounterVec
+    '     + FramesReceivedTotal *prometheus.CounterVec
+    '     + FramesDiscardedTotal *prometheus.CounterVec
+    '     + IPPktsDiscardedTotal *prometheus.CounterVec
+    '     + SendExternalErrorsTotal *prometheus.CounterVec
+    '     + SendLocalErrorsTotal *prometheus.CounterVec
+    '     + ReceiveExternalErrorsTotal *prometheus.CounterVec
+    '     + ReceiveLocalErrorsTotal *prometheus.CounterVec
+    '     + PathsMonitored *prometheus.GaugeVec
+    '     + SessionPathsAvailable *prometheus.GaugeVec
+    '     + PathProbesSent *prometheus.CounterVec
+    '     + PathProbesReceived *prometheus.CounterVec
+    '     + PathProbesSendErrors *prometheus.CounterVec
+    '     + Remotes *prometheus.GaugeVec
+    '     + RemoteDiscoveryErrors *prometheus.CounterVec
+    '     + PrefixFetchErrors *prometheus.CounterVec
+    '     + PrefixesAdvertised *prometheus.GaugeVec
+    '     + PrefixesAccepted *prometheus.GaugeVec
+    '     + PrefixesRejected *prometheus.GaugeVec
+    '     + SessionProbes *prometheus.CounterVec
+    '     + SessionProbeReplies *prometheus.CounterVec
+    '     + SessionIsHealthy *prometheus.GaugeVec
+    '     + SCIONNetworkMetrics snet.SCIONNetworkMetrics
+    '     + SCMPErrors metrics.Counter
+    '     + SCIONPacketConnMetrics snet.SCIONPacketConnMetrics
+
+    ' }
+    ' class PacketConnFactory << (S,Aquamarine) >> {
+    '     + Network *snet.SCIONNetwork
+    '     + Addr *net.UDPAddr
+
+    '     + New() (net.PacketConn, error)
+
+    ' }
+    ' class PathMonitor << (S,Aquamarine) >> {
+    '     - revStore pathhealth.RevocationStore
+    '     - sessionPathsAvailable metrics.Gauge
+
+    '     + Register(ctx context.Context, remote addr.IA, policies *policies.Policies, policyID string) control.PathMonitorRegistration
+
+    ' }
+    ' class ProbeConnFactory << (S,Aquamarine) >> {
+    '     + Dispatcher *reconnect.DispatcherService
+    '     + LocalIA addr.IA
+    '     + LocalIP net.IP
+
+    '     + New(ctx context.Context) (net.PacketConn, error)
+
+    ' }
+    ' class RoutingPolicyPublisherAdapter << (S,Aquamarine) >> {
+    '     + PublishRoutingPolicy(rp *routing.Policy) 
+
+    ' }
+    ' class RoutingTableFactory << (S,Aquamarine) >> {
+    '     + RoutePublisherFactory control.PublisherFactory
+
+    '     + New(routingChains []*control.RoutingChain) (control.RoutingTable, error)
+
+    ' }
+    ' class SelectAdvertisedRoutes << (S,Aquamarine) >> {
+    '     + ConfigPublisher *control.ConfigPublisher
+
+    '     + AdvertiseList(from addr.IA, to addr.IA) ([]netaddr.IPPrefix, error)
+
+    ' }
+    ' class TunnelReader << (S,Aquamarine) >> {
+    '     + DeviceOpener control.DeviceOpener
+    '     + Router control.RoutingTableReader
+    '     + Metrics dataplane.IPForwarderMetrics
+
+    '     + GetDeviceOpenerWithAsyncReader(ctx context.Context) control.DeviceOpener
+
+    ' }
+    ' class WatcherFactory << (S,Aquamarine) >> {
+    '     + Dialer grpc.Dialer
+    '     + PathMonitor control.PathMonitor
+    '     + Aggregator control.PrefixConsumer
+    '     + Policies *policies.Policies
+
+    '     + New(ctx context.Context, remote addr.IA, metrics control.GatewayWatcherMetrics) control.Runner
+
+    ' }
+    ' class fetcherFactory << (S,Aquamarine) >> {
+    '     - remote addr.IA
+    '     - wf *WatcherFactory
+
+    '     + NewPrefixFetcher(ctx context.Context, gateway control.Gateway) control.PrefixFetcher
+
+    ' }
+    ' class ignoreSCMP << (S,Aquamarine) >> {
+    '     + Handle(pkt *snet.Packet) error
+
+    ' }
+    ' class prefixFetcher << (S,Aquamarine) >> {
+    '     - closedMtx sync.RWMutex
+    '     - closed bool
+
+    '     + Close() error
+
+    ' }
+    ' class registration << (S,Aquamarine) >> {
+    '     - sessionPathsAvailable metrics.Gauge
+
+    '     + Get() pathhealth.Selection
+
+    ' }
+    ' class watcherWrapper << (S,Aquamarine) >> {
+    '     - pather control.PathMonitorRegistration
+
+    '     + Run(ctx context.Context) error
+
+    ' }
+}
+' "pathhealth.Monitor" *-- "gateway.PathMonitor"
+' "control.ConfigPublisher" *-- "gateway.RoutingPolicyPublisherAdapter"
+' "grpc.PrefixFetcher" *-- "gateway.prefixFetcher"
+' "pathhealth.Registration" *-- "gateway.registration"
+' "control.GatewayWatcher" *-- "gateway.watcherWrapper"
+
+
+@enduml

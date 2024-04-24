@@ -1,43 +1,212 @@
-@startuml dataplane
+@startuml gateway
 
-!include relation.puml
+' !include relation.puml
 
-namespace dataplane {
-    class AtomicRoutingTable << (S,Aquamarine) >> {
-        - mtx sync.RWMutex
-        - table control.RoutingTable
+namespace gateway {
+    ' interface DataPlaneRunner  {
+    '     + StartIngress(scionNetwork *snet.SCIONNetwork, dataAddr *net.UDPAddr, deviceManager control.DeviceManager, metrics *Metrics) error
+    '     + NewDataPlaneSessionFactory(scionNetwork *snet.SCIONNetwork, dataClientIP net.IP, metrics *Metrics, reportCollector <font color=blue>interface</font>{}) control.DataplaneSessionFactory
+    '     + NewRoutingTableFactory() control.RoutingTableFactory
 
-        - getPointer() control.RoutingTable
+    ' }
+    class DataplaneSessionFactory << (S,Aquamarine) >> {
+        + PacketConnFactory PacketConnFactory
+        + PathStatsPublisher dataplane.PathStatsPublisher
+        + Metrics dataplane.SessionMetrics
 
-        + RouteIPv4(packet layers.IPv4) control.PktWriter
-        + RouteIPv6(packet layers.IPv6) control.PktWriter
-        + SetRoutingTable(table control.RoutingTable) io.Closer
+        + New(id uint8, policyID int, remoteIA addr.IA, remoteAddr net.Addr) control.DataplaneSession
 
     }
-    interface DiagnosticsWriter  {
-        + DiagnosticsWrite( io.Writer) 
+    class Gateway << (S,Aquamarine) >> {
+        + ID string
+        + TrafficPolicyFile string
+        + RoutingPolicyFile string
+        + ControlClientIP net.IP
+        + ControlServerAddr *net.UDPAddr
+        + ServiceDiscoveryClientIP net.IP
+        + PathMonitorIP net.IP
+        + ProbeServerAddr *net.UDPAddr
+        + ProbeClientIP net.IP
+        + DataServerAddr *net.UDPAddr
+        + DataClientIP net.IP
+        + DataAddr *net.UDPAddr
+        + Dispatcher reliable.Dispatcher
+        + Daemon daemon.Connector
+        + RouteSourceIPv4 net.IP
+        + RouteSourceIPv6 net.IP
+        + TunnelName string
+        + RoutingTableReader control.RoutingTableReader
+        + RoutingTableSwapper control.RoutingTableSwapper
+        + ConfigReloadTrigger <font color=blue>chan</font> <font color=blue>struct</font>{}
+        + HTTPEndpoints service.StatusPages
+        + HTTPServeMux *http.ServeMux
+        + Metrics *Metrics
 
-    }
-    class IPForwarder << (S,Aquamarine) >> {
-        + Reader io.Reader
-        + RoutingTable control.RoutingTableReader
-        + Metrics IPForwarderMetrics
-
-        - validate() error
-        - initMetrics() 
+        - diagnosticsSGRP(routePublisherFactory control.PublisherFactory, pub *control.ConfigPublisher) http.HandlerFunc
 
         + Run(ctx context.Context) error
 
     }
-    class IPForwarderMetrics << (S,Aquamarine) >> {
-        + IPPktBytesLocalRecv metrics.Counter
-        + IPPktsLocalRecv metrics.Counter
-        + IPPktsNoRoute metrics.Counter
-        + IPPktsInvalid metrics.Counter
-        + IPPktsFragmented metrics.Counter
-        + ReceiveLocalErrors metrics.Counter
+}
+
+
+namespace control {
+    interface DataplaneSession  {
+        + SetPaths( []snet.Path) error
+        + Close() 
 
     }
+    interface DataplaneSessionFactory  {
+        + New(sessID uint8, policyID int, remoteIA addr.IA, remoteAddr net.Addr) DataplaneSession
+
+    }
+    class Engine << (S,Aquamarine) >> {
+        - stateMtx sync.RWMutex
+        - eventNotifications <font color=blue>chan</font> SessionEvent
+        - dataplaneSessions <font color=blue>map</font>[uint8]DataplaneSession
+        - sessionMonitors []*SessionMonitor
+        - sessions []*Session
+        - router *Router
+        - pathMonitorRegistrations []PathMonitorRegistration
+        - deviceHandles []DeviceHandle
+        - probeConns []net.PacketConn
+        - workerBase worker.Base
+
+        + SessionConfigs []*SessionConfig
+        + RoutingTable RoutingTable
+        + RoutingTableIndices <font color=blue>map</font>[int][]uint8
+        + PathMonitor PathMonitor
+        + ProbeConnFactory PacketConnFactory
+        + DeviceManager DeviceManager
+        + DataplaneSessionFactory DataplaneSessionFactory
+        + Metrics EngineMetrics
+
+        - setup(ctx context.Context) error
+        - validate() error
+        - initWorkers(ctx context.Context) error
+        - close(ctx context.Context) error
+
+        + Run(ctx context.Context) error
+        + DiagnosticsWrite(w io.Writer) 
+        + Status(w io.Writer) 
+        + Close(ctx context.Context) error
+
+    }
+    note right of Engine::DataplaneSessionFactory
+        Engine use the method to create a ""**DataplaneSession**""
+    end note
+    
+    class EngineController << (S,Aquamarine) >> {
+        - stateMtx sync.RWMutex
+        - engine Worker
+        - workerBase worker.Base
+
+        + ConfigurationUpdates <font color=blue>chan</font> []*SessionConfig
+        + RoutingTableSwapper RoutingTableSwapper
+        + RoutingTableFactory RoutingTableFactory
+        + EngineFactory EngineFactory
+        + RoutePublisherFactory PublisherFactory
+        + RouteSourceIPv4 net.IP
+        + RouteSourceIPv6 net.IP
+        + SwapDelay time.Duration
+
+        - validate(ctx context.Context) error
+        - run(ctx context.Context) error
+
+        + Run(ctx context.Context) error
+        + DiagnosticsWrite(w io.Writer) 
+        + Status(w io.Writer) 
+
+    }
+    interface EngineFactory  {
+        + New(table RoutingTable, sessions []*SessionConfig, routingTableIndices <font color=blue>map</font>[int][]uint8) Worker
+
+    }
+
+    class DefaultEngineFactory << (S,Aquamarine) >> {
+        + PathMonitor PathMonitor
+        + ProbeConnFactory PacketConnFactory
+        + DeviceManager DeviceManager
+        + DataplaneSessionFactory DataplaneSessionFactory
+        + Metrics EngineMetrics
+
+        + New(table RoutingTable, sessions []*SessionConfig, routingTableIndices <font color=blue>map</font>[int][]uint8) Worker
+
+    }
+    interface Worker  {
+        + Run( context.Context) error
+        + Close( context.Context) error
+
+    }
+    class Session << (S,Aquamarine) >> {
+        - pathResultMtx sync.RWMutex
+        - pathResult pathhealth.Selection
+        - runCalledMutex sync.Mutex
+        - runCalled bool
+
+        + ID uint8
+        + RemoteIA addr.IA
+        + Events <font color=blue>chan</font> SessionEvent
+        + SessionMonitorEvents <font color=blue>chan</font> SessionEvent
+        + PathMonitorRegistration PathMonitorRegistration
+        + PathMonitorPollInterval time.Duration
+        + DataplaneSession DataplaneSession
+
+        - runCalledCheck() error
+        - validate() error
+        - sessionPaths() sessionPaths
+
+        + Run(ctx context.Context) error
+
+    }
+
+    Engine *-- DataplaneSessionFactory
+    EngineController *-- EngineFactory
+    EngineController "1" *-- Engine
+    Engine "1" *-- "*" DataplaneSession
+    Engine ..|> Worker
+    EngineFactory <|.. DefaultEngineFactory
+
+
+}
+
+
+namespace dataplane {
+    ' class AtomicRoutingTable << (S,Aquamarine) >> {
+    '     - mtx sync.RWMutex
+    '     - table control.RoutingTable
+
+    '     - getPointer() control.RoutingTable
+
+    '     + RouteIPv4(packet layers.IPv4) control.PktWriter
+    '     + RouteIPv6(packet layers.IPv6) control.PktWriter
+    '     + SetRoutingTable(table control.RoutingTable) io.Closer
+
+    ' }
+    ' interface DiagnosticsWriter  {
+    '     + DiagnosticsWrite( io.Writer) 
+
+    ' }
+    ' class IPForwarder << (S,Aquamarine) >> {
+    '     + Reader io.Reader
+    '     + RoutingTable control.RoutingTableReader
+    '     + Metrics IPForwarderMetrics
+
+    '     - validate() error
+    '     - initMetrics() 
+
+    '     + Run(ctx context.Context) error
+
+    ' }
+    ' class IPForwarderMetrics << (S,Aquamarine) >> {
+    '     + IPPktBytesLocalRecv metrics.Counter
+    '     + IPPktsLocalRecv metrics.Counter
+    '     + IPPktsNoRoute metrics.Counter
+    '     + IPPktsInvalid metrics.Counter
+    '     + IPPktsFragmented metrics.Counter
+    '     + ReceiveLocalErrors metrics.Counter
+
+    ' }
     class IngressMetrics << (S,Aquamarine) >> {
         + IPPktBytesRecv metrics.Counter
         + IPPktsRecv metrics.Counter
@@ -64,29 +233,29 @@ namespace dataplane {
         + Run(ctx context.Context) error
 
     }
-    interface PathStatsPublisher  {
-        + PublishEgressStats(fingerprint string, frames int64, bytes int64) 
+    ' interface PathStatsPublisher  {
+    '     + PublishEgressStats(fingerprint string, frames int64, bytes int64) 
 
-    }
-    interface ReadConn  {
-        + ReadFrom(b []byte) (int, net.Addr, error)
+    ' }
+    ' interface ReadConn  {
+    '     + ReadFrom(b []byte) (int, net.Addr, error)
 
-    }
-    class RoutingTable << (S,Aquamarine) >> {
-        - indexToSubEntry <font color=blue>map</font>[int]*subEntry
-        - indexToEntries <font color=blue>map</font>[int][]*entry
-        - table []*entry
+    ' }
+    ' class RoutingTable << (S,Aquamarine) >> {
+    '     - indexToSubEntry <font color=blue>map</font>[int]*subEntry
+    '     - indexToEntries <font color=blue>map</font>[int][]*entry
+    '     - table []*entry
 
-        - route(dst net.IP, pkt gopacket.Layer) control.PktWriter
+    '     - route(dst net.IP, pkt gopacket.Layer) control.PktWriter
 
-        + DiagnosticsWrite(w io.Writer) 
-        + RouteIPv4(pkt layers.IPv4) control.PktWriter
-        + RouteIPv6(pkt layers.IPv6) control.PktWriter
-        + SetSession(index int, session control.PktWriter) error
-        + ClearSession(index int) error
-        + Close() error
+    '     + DiagnosticsWrite(w io.Writer) 
+    '     + RouteIPv4(pkt layers.IPv4) control.PktWriter
+    '     + RouteIPv6(pkt layers.IPv6) control.PktWriter
+    '     + SetSession(index int, session control.PktWriter) error
+    '     + ClearSession(index int) error
+    '     + Close() error
 
-    }
+    ' }
     class Session << (S,Aquamarine) >> {
         - mutex sync.Mutex
         - senders []*sender
@@ -138,15 +307,15 @@ namespace dataplane {
         + ChangeFrameSize(mtu int) 
 
     }
-    class entry << (S,Aquamarine) >> {
-        + Prefix *net.IPNet
-        + Table []*subEntry
+    ' class entry << (S,Aquamarine) >> {
+    '     + Prefix *net.IPNet
+    '     + Table []*subEntry
 
-        - route(pkt gopacket.Layer) control.PktWriter
+    '     - route(pkt gopacket.Layer) control.PktWriter
 
-        + String() string
+    '     + String() string
 
-    }
+    ' }
     class frameBuf << (S,Aquamarine) >> {
         - sessId uint8
         - seqNr uint64
@@ -236,13 +405,13 @@ namespace dataplane {
         + Write(pkt []byte) 
 
     }
-    class subEntry << (S,Aquamarine) >> {
-        + Class pktcls.Cond
-        + Session control.PktWriter
+    ' class subEntry << (S,Aquamarine) >> {
+    '     + Class pktcls.Cond
+    '     + Session control.PktWriter
 
-        + String() string
+    '     + String() string
 
-    }
+    ' }
     class worker << (S,Aquamarine) >> {
         - numPaths uint8
         - rlists <font color=blue>map</font>[int]*reassemblyList
@@ -264,24 +433,33 @@ namespace dataplane {
         + Run(ctx context.Context) 
 
     }
+
+
+    DiagnosticsWriter <|-- RoutingTable
+    ingressSender <|-- worker
+
+    Session "1" *-- "many" sender
+    Session *-- encoder
+    Session *-- SessionMetrics
+    frameBufGroup "1" *-- "many" frameBuf
+
+    IngressServer "1" *-- "many" worker
+    IngressServer  *--  IngressMetrics
+
+
+    worker *-- reassemblyList
+    ' Not sure the right relation
+    reassemblyList *-- frameBufGroup
+
+
+    sender "1" *-- "1" pktRing
+
+    note bottom of encoder: Reads packets from a ring buffer and\ntransforms them into SIG frames
 }
+gateway.Gateway *-- control.EngineController
+gateway.Gateway *-- dataplane.IngressServer
+control.DataplaneSession <|.. dataplane.Session
+control.Session *-- dataplane.Session
+control.DefaultEngineFactory *-- gateway.DataplaneSessionFactory
 
-' dataplane.DiagnosticsWriter <|-- dataplane.RoutingTable
-' dataplane.ingressSender <|-- dataplane.worker
-
-' dataplane.Session "1" *-- "many" dataplane.sender
-' dataplane.Session *-- dataplane.encoder
-' dataplane.Session *-- dataplane.SessionMetrics
-' dataplane.frameBufGroup "1" *-- "many" dataplane.frameBuf
-
-' dataplane.IngressServer "1" *-- "many" dataplane.worker
-' dataplane.IngressServer  *--  dataplane.IngressMetrics
-
-
-' dataplane.worker *-- dataplane.reassemblyList
-' ' Not sure the right relation
-' dataplane.reassemblyList *-- dataplane.frameBufGroup
-
-
-' dataplane.sender "1" *-- "1" dataplane.pktRing
 @enduml

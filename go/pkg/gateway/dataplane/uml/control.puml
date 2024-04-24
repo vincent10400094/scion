@@ -1,0 +1,1200 @@
+@startuml control
+namespace control {
+'     class Aggregator << (S,Aquamarine) >> {
+'         - mutex sync.Mutex
+'         - gateways <font color=blue>map</font>[string]gatewayEntry
+'         - changed bool
+'         - workerBase worker.Base
+
+'         + RoutingUpdateChan <font color=blue>chan</font> 
+'         + ReportingInterval time.Duration
+'         + ExpiryInterval time.Duration
+
+'         - setup(ctx context.Context) error
+'         - run(ctx context.Context) error
+'         - report() 
+
+'         + Run(ctx context.Context) error
+'         + Close(ctx context.Context) 
+'         + Prefixes(remote addr.IA, gateway Gateway, prefixes []*net.IPNet) error
+
+'     }
+'     class ConfigPublisher << (S,Aquamarine) >> {
+'         - mtx sync.RWMutex
+'         - sessionPolicies SessionPolicies
+'         - routingPolicy *routing.Policy
+'         - sessionPoliciesSubscribers []<font color=blue>chan</font> SessionPolicies
+'         - routingPoliciesSubscribers []<font color=blue>chan</font> *routing.Policy
+'         - remoteIAsSubscribers []<font color=blue>chan</font> []addr.IA
+
+'         + Publish(sp SessionPolicies, rp *routing.Policy) 
+'         + SubscribeSessionPolicies() <font color=blue>chan</font> SessionPolicies
+'         + SubscribeRoutingPolicies() <font color=blue>chan</font> *routing.Policy
+'         + SubscribeRemoteIAs() <font color=blue>chan</font> []addr.IA
+'         + RoutingPolicy() *routing.Policy
+
+'     }
+'     interface Consumer  {
+'         + Updates() <font color=blue>chan</font> RouteUpdate
+'         + Close() 
+
+'     }
+'     interface ConsumerFactory  {
+'         + NewConsumer() Consumer
+
+'     }
+    interface DataplaneSession  {
+        + SetPaths( []snet.Path) error
+        + Close() 
+
+    }
+    interface DataplaneSessionFactory  {
+        + New(sessID uint8, policyID int, remoteIA addr.IA, remoteAddr net.Addr) DataplaneSession
+
+    }
+    class DefaultEngineFactory << (S,Aquamarine) >> {
+        + PathMonitor PathMonitor
+        + ProbeConnFactory PacketConnFactory
+        + DeviceManager DeviceManager
+        + DataplaneSessionFactory DataplaneSessionFactory
+        + Metrics EngineMetrics
+
+        + New(table RoutingTable, sessions []*SessionConfig, routingTableIndices <font color=blue>map</font>[int][]uint8) Worker
+
+    }
+'     interface Device  {
+'         + AddRoute(ctx context.Context, r *Route) error
+'         + DeleteRoute(ctx context.Context, r *Route) error
+
+'     }
+'     interface DeviceManager  {
+'         + Get(ctx context.Context, ia addr.IA) (DeviceHandle, error)
+
+'     }
+'     interface DeviceOpener  {
+'         + Open(ctx context.Context, ia addr.IA) (Device, error)
+
+'     }
+'     class DeviceOpenerFunc << (S,Aquamarine) >> {
+'         + Open(ctx context.Context, ia addr.IA) (Device, error)
+
+'     }
+'     class Diagnostics << (S,Aquamarine) >> {
+'         + Routes []Route
+
+'     }
+'     interface DiagnosticsWriter  {
+'         + DiagnosticsWrite( io.Writer) 
+
+'     }
+'     interface Discoverer  {
+'         + Gateways(ctx context.Context) ([]Gateway, error)
+
+'     }
+    class Engine << (S,Aquamarine) >> {
+        - stateMtx sync.RWMutex
+        - eventNotifications <font color=blue>chan</font> SessionEvent
+        - dataplaneSessions <font color=blue>map</font>[uint8]DataplaneSession
+        - sessionMonitors []*SessionMonitor
+        - sessions []*Session
+        - router *Router
+        - pathMonitorRegistrations []PathMonitorRegistration
+        - deviceHandles []DeviceHandle
+        - probeConns []net.PacketConn
+        - workerBase worker.Base
+
+        + SessionConfigs []*SessionConfig
+        + RoutingTable RoutingTable
+        + RoutingTableIndices <font color=blue>map</font>[int][]uint8
+        + PathMonitor PathMonitor
+        + ProbeConnFactory PacketConnFactory
+        + DeviceManager DeviceManager
+        + DataplaneSessionFactory DataplaneSessionFactory
+        + Metrics EngineMetrics
+
+        - setup(ctx context.Context) error
+        - validate() error
+        - initWorkers(ctx context.Context) error
+        - close(ctx context.Context) error
+
+        + Run(ctx context.Context) error
+        + DiagnosticsWrite(w io.Writer) 
+        + Status(w io.Writer) 
+        + Close(ctx context.Context) error
+
+    }
+    note right of Engine::DataplaneSessionFactory
+        Engine use the method to create a ""**DataplaneSession**""
+    end note
+    class EngineController << (S,Aquamarine) >> {
+        - stateMtx sync.RWMutex
+        - engine Worker
+        - workerBase worker.Base
+
+        + ConfigurationUpdates <font color=blue>chan</font> []*SessionConfig
+        + RoutingTableSwapper RoutingTableSwapper
+        + RoutingTableFactory RoutingTableFactory
+        + EngineFactory EngineFactory
+        + RoutePublisherFactory PublisherFactory
+        + RouteSourceIPv4 net.IP
+        + RouteSourceIPv6 net.IP
+        + SwapDelay time.Duration
+
+        - validate(ctx context.Context) error
+        - run(ctx context.Context) error
+
+        + Run(ctx context.Context) error
+        + DiagnosticsWrite(w io.Writer) 
+        + Status(w io.Writer) 
+
+    }
+    interface EngineFactory  {
+        + New(table RoutingTable, sessions []*SessionConfig, routingTableIndices <font color=blue>map</font>[int][]uint8) Worker
+
+    }
+'     class EngineMetrics << (S,Aquamarine) >> {
+'         + SessionMonitorMetrics SessionMonitorMetrics
+
+'     }
+'     class Gateway << (S,Aquamarine) >> {
+'         + Control *net.UDPAddr
+'         + Probe *net.UDPAddr
+'         + Data *net.UDPAddr
+'         + Interfaces []uint64
+
+'         + Equal(other Gateway) bool
+
+'     }
+'     class GatewayWatcher << (S,Aquamarine) >> {
+'         - stateMtx sync.RWMutex
+'         - gateways []Gateway
+'         - currentWatchers <font color=blue>map</font>[string]watcherItem
+'         - runMarkerLock sync.Mutex
+'         - runMarker bool
+
+'         + Remote addr.IA
+'         + Discoverer Discoverer
+'         + DiscoverInterval time.Duration
+'         + DiscoverTimeout time.Duration
+'         + Template PrefixWatcherConfig
+'         + Metrics GatewayWatcherMetrics
+
+'         - run(runCtx context.Context) 
+'         - watchPrefixes(ctx context.Context, gateway Gateway) watcherItem
+'         - runOnceCheck() error
+'         - diagnostics() (remoteDiagnostics, error)
+'         - validateParameters() error
+
+'         + Run(ctx context.Context) error
+
+'     }
+'     interface GatewayWatcherFactory  {
+'         + New( context.Context,  addr.IA,  GatewayWatcherMetrics) Runner
+
+'     }
+'     class GatewayWatcherMetrics << (S,Aquamarine) >> {
+'         + Remotes metrics.Gauge
+'         + DiscoveryErrors metrics.Counter
+'         + PrefixFetchErrors metrics.Counter
+
+'     }
+'     class LegacySessionPolicyAdapter << (S,Aquamarine) >> {
+'         + Parse(ctx context.Context, raw []byte) (SessionPolicies, error)
+
+'     }
+'     interface PacketConnFactory  {
+'         + New() (net.PacketConn, error)
+
+'     }
+'     interface PathMonitor  {
+'         + Register(ctx context.Context, ia addr.IA, policies *policies.Policies, policyID string) PathMonitorRegistration
+
+'     }
+'     interface PathMonitorRegistration  {
+'         + Get() pathhealth.Selection
+'         + Close() 
+
+'     }
+'     interface PktWriter  {
+'         + Write(packet gopacket.Packet) 
+
+'     }
+'     interface PrefixConsumer  {
+'         + Prefixes(remote addr.IA, gateway Gateway, prefixes []*net.IPNet) error
+
+'     }
+'     interface PrefixFetcher  {
+'         + Prefixes(ctx context.Context, gateway *net.UDPAddr) ([]*net.IPNet, error)
+'         + Close() error
+
+'     }
+'     interface PrefixFetcherFactory  {
+'         + NewPrefixFetcher(ctx context.Context, gateway Gateway) PrefixFetcher
+
+'     }
+'     class PrefixWatcherConfig << (S,Aquamarine) >> {
+'         + Consumer PrefixConsumer
+'         + FetcherFactory PrefixFetcherFactory
+'         + PollInterval time.Duration
+'         + PollTimeout time.Duration
+
+'         - validateParameters() error
+
+'     }
+'     class PrefixesFilter << (S,Aquamarine) >> {
+'         + LocalIA addr.IA
+'         + Consumer PrefixConsumer
+'         + PolicyProvider RoutingPolicyProvider
+'         + Metrics PrefixesFilterMetrics
+
+'         + Prefixes(remote addr.IA, gateway Gateway, prefixes []*net.IPNet) error
+
+'     }
+'     class PrefixesFilterMetrics << (S,Aquamarine) >> {
+'         + PrefixesAccepted metrics.Gauge
+'         + PrefixesRejected metrics.Gauge
+
+'     }
+'     interface Publisher  {
+'         + AddRoute(route Route) 
+'         + DeleteRoute(route Route) 
+'         + Close() 
+
+'     }
+'     interface PublisherFactory  {
+'         + NewPublisher() Publisher
+
+'     }
+'     class RemoteGateway << (S,Aquamarine) >> {
+'         + Gateway Gateway
+'         + Prefixes []*net.IPNet
+
+'     }
+'     class RemoteGateways << (S,Aquamarine) >> {
+'         + Gateways <font color=blue>map</font>[addr.IA][]RemoteGateway
+
+'     }
+'     class RemoteMonitor << (S,Aquamarine) >> {
+'         - stateMtx sync.RWMutex
+'         - context context.Context
+'         - cancel context.CancelFunc
+'         - currentWatchers <font color=blue>map</font>[addr.IA]watcherEntry
+'         - workerBase worker.Base
+
+'         + GatewayWatcherFactory GatewayWatcherFactory
+'         + IAs <font color=blue>chan</font> []addr.IA
+'         + RemotesMonitored <font color=blue>func</font>(addr.IA) metrics.Gauge
+'         + RemoteDiscoveryErrors <font color=blue>func</font>(addr.IA) metrics.Counter
+'         + PrefixFetchErrors <font color=blue>func</font>(addr.IA) metrics.Counter
+
+'         - setup(ctx context.Context) error
+'         - run(ctx context.Context) error
+'         - process(ctx context.Context, ias []addr.IA) 
+
+'         + Run(ctx context.Context) error
+'         + Close(ctx context.Context) error
+'         + DiagnosticsWrite(w io.Writer) 
+
+'     }
+'     class Route << (S,Aquamarine) >> {
+'         + Prefix *net.IPNet
+'         + NextHop net.IP
+'         + Source net.IP
+'         + IA addr.IA
+
+'         + String() string
+
+'     }
+'     class RouteUpdate << (S,Aquamarine) >> {
+'         + IsAdd bool
+
+'     }
+'     class Router << (S,Aquamarine) >> {
+'         - stateMtx sync.RWMutex
+'         - sessionStates <font color=blue>map</font>[uint8]Event
+'         - currentSessions <font color=blue>map</font>[int]uint8
+'         - workerBase worker.Base
+
+'         + RoutingTable RoutingTableWriter
+'         + RoutingTableIndices <font color=blue>map</font>[int][]uint8
+'         + DataplaneSessions <font color=blue>map</font>[uint8]PktWriter
+'         + Events <font color=blue>chan</font> SessionEvent
+
+'         - run(ctx context.Context) error
+'         - initData(ctx context.Context) error
+'         - handleEvent(event SessionEvent) error
+'         - findSession(rtID int) (uint8, int)
+
+'         + Run(ctx context.Context) error
+'         + Close(ctx context.Context) error
+'         + DiagnosticsWrite(w io.Writer) 
+
+'     }
+'     class RoutingChain << (S,Aquamarine) >> {
+'         + RemoteIA addr.IA
+'         + Prefixes []*net.IPNet
+'         + TrafficMatchers []TrafficMatcher
+
+'     }
+'     interface RoutingPolicyProvider  {
+'         + RoutingPolicy() *routing.Policy
+
+'     }
+'     interface RoutingTable  {
+'     }
+'     interface RoutingTableFactory  {
+'         + New( []*RoutingChain) (RoutingTable, error)
+
+'     }
+'     interface RoutingTableReader  {
+'         + RouteIPv4(pkt layers.IPv4) PktWriter
+'         + RouteIPv6(pkt layers.IPv6) PktWriter
+
+'     }
+'     interface RoutingTableSwapper  {
+'         + SetRoutingTable( RoutingTable) io.Closer
+
+'     }
+'     interface RoutingTableWriter  {
+'         + SetSession(index int, session PktWriter) error
+'         + ClearSession(index int) error
+
+'     }
+'     interface Runner  {
+'         + Run( context.Context) error
+
+'     }
+    class Session << (S,Aquamarine) >> {
+        - pathResultMtx sync.RWMutex
+        - pathResult pathhealth.Selection
+        - runCalledMutex sync.Mutex
+        - runCalled bool
+
+        + ID uint8
+        + RemoteIA addr.IA
+        + Events <font color=blue>chan</font> SessionEvent
+        + SessionMonitorEvents <font color=blue>chan</font> SessionEvent
+        + PathMonitorRegistration PathMonitorRegistration
+        + PathMonitorPollInterval time.Duration
+        + DataplaneSession DataplaneSession
+
+        - runCalledCheck() error
+        - validate() error
+        - sessionPaths() sessionPaths
+
+        + Run(ctx context.Context) error
+
+    }
+'     class SessionConfig << (S,Aquamarine) >> {
+'         + ID uint8
+'         + PolicyID int
+'         + IA addr.IA
+'         + TrafficMatcher pktcls.Cond
+'         + PerfPolicy policies.PerfPolicy
+'         + PathPolicy policies.PathPolicy
+'         + PathCount int
+'         + Gateway Gateway
+'         + Prefixes []*net.IPNet
+
+'     }
+'     class SessionConfigurator << (S,Aquamarine) >> {
+'         - stateMtx sync.RWMutex
+'         - currentSessionPolicies SessionPolicies
+'         - currentRemotes RemoteGateways
+'         - configs []*SessionConfig
+'         - workerBase worker.Base
+
+'         + SessionPolicies <font color=blue>chan</font> SessionPolicies
+'         + RoutingUpdates <font color=blue>chan</font> RemoteGateways
+'         + SessionConfigurations <font color=blue>chan</font> []*SessionConfig
+
+'         - run(ctx context.Context) error
+'         - validate(ctx context.Context) error
+
+'         + Run(ctx context.Context) error
+'         + Close(ctx context.Context) error
+'         + DiagnosticsWrite(w io.Writer) 
+
+'     }
+'     class SessionEvent << (S,Aquamarine) >> {
+'         + SessionID uint8
+'         + Event Event
+
+'     }
+'     class SessionMonitor << (S,Aquamarine) >> {
+'         - stateMtx sync.RWMutex
+'         - state Event
+'         - expirationTimer *time.Timer
+'         - receivedProbe <font color=blue>chan</font> <font color=blue>struct</font>{}
+'         - rawProbe []byte
+'         - workerBase worker.Base
+
+'         + ID uint8
+'         + RemoteIA addr.IA
+'         + ProbeAddr *net.UDPAddr
+'         + Events <font color=blue>chan</font> SessionEvent
+'         + Paths PathMonitorRegistration
+'         + ProbeConn net.PacketConn
+'         + ProbeInterval time.Duration
+'         + HealthExpiration time.Duration
+'         + Metrics SessionMonitorMetrics
+
+'         - initDefaults() 
+'         - run(ctx context.Context) error
+'         - notification(e Event) SessionEvent
+'         - sessionState() sessionState
+'         - setupInternalState(ctx context.Context) error
+'         - sendProbe(ctx context.Context) 
+'         - handleProbeReply(ctx context.Context) 
+'         - handleExpiration(ctx context.Context) 
+'         - drainConn(ctx context.Context) 
+'         - handlePkt(raw []byte) error
+
+'         + Run(ctx context.Context) error
+'         + Close(ctx context.Context) error
+
+'     }
+'     class SessionMonitorMetrics << (S,Aquamarine) >> {
+'         + Probes metrics.Counter
+'         + ProbeReplies metrics.Counter
+'         + IsHealthy metrics.Gauge
+
+'     }
+'     class SessionPolicies << (S,Aquamarine) >> {
+'         + RemoteIAs() []addr.IA
+'         + Copy() SessionPolicies
+
+'     }
+'     class SessionPolicy << (S,Aquamarine) >> {
+'         + IA addr.IA
+'         + ID int
+'         + TrafficMatcher pktcls.Cond
+'         + PerfPolicy policies.PerfPolicy
+'         + PathPolicy policies.PathPolicy
+'         + PathCount int
+'         + Prefixes []*net.IPNet
+
+'         + Copy() SessionPolicy
+
+'     }
+'     interface SessionPolicyParser  {
+'         + Parse( context.Context,  []byte) (SessionPolicies, error)
+
+'     }
+'     class TrafficMatcher << (S,Aquamarine) >> {
+'         + ID int
+'         + Matcher pktcls.Cond
+
+'     }
+    interface Worker  {
+        + Run( context.Context) error
+        + Close( context.Context) error
+
+    }
+'     class conjuctionPathPol << (S,Aquamarine) >> {
+'         + Pol1 policies.PathPolicy
+
+'         + Filter(s []snet.Path) []snet.Path
+
+'     }
+'     class control.DeviceHandle << (T, #FF7700) >>  {
+'     }
+'     class control.DeviceOpenerFunc << (T, #FF7700) >>  {
+'     }
+'     class control.Event << (T, #FF7700) >>  {
+'     }
+'     class control.SessionPolicies << (T, #FF7700) >>  {
+'     }
+'     class control.gatewaySet << (T, #FF7700) >>  {
+'     }
+'     class diff << (S,Aquamarine) >> {
+'         + Add []Gateway
+'         + Remove []Gateway
+
+'     }
+'     class fingerPrintOrder << (S,Aquamarine) >> {
+'         + Better(x *policies.Stats, y *policies.Stats) bool
+
+'     }
+'     class gatewayDiagnostics << (S,Aquamarine) >> {
+'         + DataAddr string
+'         + ProbeAddr string
+'         + Interfaces []uint64
+'         + Prefixes []string
+'         + Timestamp time.Time
+
+'     }
+'     class gatewayEntry << (S,Aquamarine) >> {
+'         + IA addr.IA
+'         + Gateway Gateway
+'         + Prefixes []*net.IPNet
+'         + LastUpdated time.Time
+
+'     }
+'     class prefixWatcher << (S,Aquamarine) >> {
+'         - gateway Gateway
+'         - remote addr.IA
+'         - fetcher PrefixFetcher
+'         - runMarkerLock sync.Mutex
+'         - runMarker bool
+'         - stateMtx sync.RWMutex
+'         - prefixes []string
+'         - timestamp time.Time
+'         - fetchErrors metrics.Counter
+
+'         - run(ctx context.Context) 
+'         - runOnceCheck() error
+
+'         + Run(ctx context.Context) error
+
+'     }
+'     class publishingRoutingTable << (S,Aquamarine) >> {
+'         - mutex sync.RWMutex
+'         - routingTable RoutingTable
+'         - routePublisher Publisher
+'         - nextHop net.IP
+'         - sourceIPv4 net.IP
+'         - sourceIPv6 net.IP
+'         - remoteSites []*remoteSite
+
+'         - setSessionLocked(index int, session PktWriter) error
+'         - sourceForPrefix(prefix *net.IPNet) net.IP
+
+'         + RouteIPv4(pkt layers.IPv4) PktWriter
+'         + RouteIPv6(pkt layers.IPv6) PktWriter
+'         + SetSession(index int, session PktWriter) error
+'         + Close() error
+'         + ClearSession(index int) error
+'         + DiagnosticsWrite(w io.Writer) 
+
+'     }
+'     class remoteDiagnostics << (S,Aquamarine) >> {
+'         + Gateways <font color=blue>map</font>[string]gatewayDiagnostics
+
+'     }
+'     class remoteSite << (S,Aquamarine) >> {
+'         - prefixes []*net.IPNet
+'         - trafficClasses <font color=blue>map</font>[int]PktWriter
+'         - ia addr.IA
+
+'         - healthy() bool
+
+'     }
+'     class sessionPaths << (S,Aquamarine) >> {
+'         + ID uint8
+'         + Info string
+'         + Paths []snet.Path
+
+'     }
+'     class sessionState << (S,Aquamarine) >> {
+'         + ID uint8
+'         + Healthy bool
+
+'     }
+'     class watcherEntry << (S,Aquamarine) >> {
+'         - runner Runner
+'         - cancel context.CancelFunc
+
+'     }
+'     class watcherItem << (S,Aquamarine) >> {
+'         - cancel <font color=blue>func</font>() 
+
+'         + Close() error
+
+'     }
+'     class "<font color=blue>func</font>(context.Context, addr.IA) (Device, error)" as fontcolorbluefuncfontcontextContextaddrIADeviceerror {
+'         'This class was created so that we can correctly have an alias pointing to this name. Since it contains dots that can break namespaces
+'     }
+
+    Engine *-- DataplaneSessionFactory
+    EngineController *-- EngineFactory
+    EngineController "1" *-- Engine
+    Engine "1" *-- "*" DataplaneSession
+    Engine ..|> Worker
+    EngineFactory <|.. DefaultEngineFactory
+}
+' "control.PktWriter" *-- "control.DataplaneSession"
+' "control.Route" *-- "control.RouteUpdate"
+' "control.RoutingTableReader" *-- "control.RoutingTable"
+' "control.RoutingTableWriter" *-- "control.RoutingTable"
+' "control.PrefixWatcherConfig" *-- "control.prefixWatcher"
+' "control.prefixWatcher" *-- "control.watcherItem"
+
+' "control.PrefixConsumer" <|-- "control.Aggregator"
+' "control.Runner" <|-- "control.Aggregator"
+' "control.RoutingPolicyProvider" <|-- "control.ConfigPublisher"
+' "control.EngineFactory" <|-- "control.DefaultEngineFactory"
+' "control.DeviceOpener" <|-- "control.DeviceOpenerFunc"
+' "control.DiagnosticsWriter" <|-- "control.Engine"
+' "control.Runner" <|-- "control.Engine"
+' "control.Worker" <|-- "control.Engine"
+' "control.DiagnosticsWriter" <|-- "control.EngineController"
+' "control.Runner" <|-- "control.EngineController"
+' "control.Runner" <|-- "control.GatewayWatcher"
+' "control.SessionPolicyParser" <|-- "control.LegacySessionPolicyAdapter"
+' "control.PrefixConsumer" <|-- "control.PrefixesFilter"
+' "control.DiagnosticsWriter" <|-- "control.RemoteMonitor"
+' "control.Runner" <|-- "control.RemoteMonitor"
+' "control.Worker" <|-- "control.RemoteMonitor"
+' "control.DiagnosticsWriter" <|-- "control.Router"
+' "control.Runner" <|-- "control.Router"
+' "control.Worker" <|-- "control.Router"
+' "control.Runner" <|-- "control.Session"
+' "control.DiagnosticsWriter" <|-- "control.SessionConfigurator"
+' "control.Runner" <|-- "control.SessionConfigurator"
+' "control.Worker" <|-- "control.SessionConfigurator"
+' "control.Runner" <|-- "control.SessionMonitor"
+' "control.Worker" <|-- "control.SessionMonitor"
+' "control.Runner" <|-- "control.prefixWatcher"
+' "control.DiagnosticsWriter" <|-- "control.publishingRoutingTable"
+' "control.RoutingTableReader" <|-- "control.publishingRoutingTable"
+' "control.RoutingTableWriter" <|-- "control.publishingRoutingTable"
+
+' namespace fake {
+'     class Config << (S,Aquamarine) >> {
+'         + LocalIA addr.IA
+'         + Chains []*control.RoutingChain
+'         + Sessions []*Session
+
+'     }
+'     class ConfigHandler << (S,Aquamarine) >> {
+'         + ConfigUpdates <font color=blue>chan</font> *Config
+
+'         + ServeHTTP(w http.ResponseWriter, r *http.Request) 
+
+'     }
+'     class Daemon << (S,Aquamarine) >> {
+'         + IA addr.IA
+
+'         + LocalIA(_ context.Context) (addr.IA, error)
+
+'     }
+'     class Gateway << (S,Aquamarine) >> {
+'         - sessions <font color=blue>map</font>[int]control.DataplaneSession
+'         - handles []control.DeviceHandle
+
+'         + TunnelName string
+'         + RoutingTableReader control.RoutingTableReader
+'         + RoutingTableSwapper control.RoutingTableSwapper
+'         + DeviceManager control.DeviceManager
+'         + DataPlaneRunner gateway.DataPlaneRunner
+'         + DataServerAddr *net.UDPAddr
+'         + DataClientIP net.IP
+'         + Dispatcher reliable.Dispatcher
+'         + Daemon daemon.Connector
+'         + ConfigurationUpdates <font color=blue>chan</font> *Config
+'         + Metrics *gateway.Metrics
+'         + DummyRouting bool
+'         + ReportingCollector <font color=blue>interface</font>{}
+
+'         + Run(ctx context.Context) error
+
+'     }
+'     class LocalIAExtractor << (S,Aquamarine) >> {
+'         - notified bool
+
+'         + ConfigUpdatesRead <font color=blue>chan</font> *Config
+'         + ConfigUpdateWrite <font color=blue>chan</font> *Config
+'         + LocalIA <font color=blue>chan</font> addr.IA
+
+'         + Run() 
+
+'     }
+'     class Session << (S,Aquamarine) >> {
+'         + ID int
+'         + PolicyID int
+'         + IsUp bool
+'         + RemoteAddr *net.UDPAddr
+'         + RemoteIA addr.IA
+'         + Paths []snet.Path
+
+'     }
+'     class rawConfig << (S,Aquamarine) >> {
+'         + LocalIsdAs addr.IA
+'         + RoutingChains []rawRoutingChain
+'         + Sessions []rawSession
+
+'     }
+'     class rawPath << (S,Aquamarine) >> {
+'         + HopFields []rawPathHopFields
+'         + NextHop *fake.UDPAddr
+'         + MTU uint16
+'         + ForwardingPath string
+
+'     }
+'     class rawPathHopFields << (S,Aquamarine) >> {
+'         + IsdAs addr.IA
+'         + Ingress uint16
+'         + Egress uint16
+'         + ExpTime uint8
+'         + Key []byte
+
+'     }
+'     class rawRoutingChain << (S,Aquamarine) >> {
+'         + RemoteIsdAs addr.IA
+'         + Prefixes []string
+'         + TrafficMatchers []rawTrafficMatcher
+
+'     }
+'     class rawSession << (S,Aquamarine) >> {
+'         + ID int
+'         + Status string
+'         + PolicyID *int
+'         + Remote *fake.UDPAddr
+'         + Paths []rawPath
+
+'     }
+'     class rawTrafficMatcher << (S,Aquamarine) >> {
+'         + ID int
+'         + Matcher string
+
+'     }
+' }
+' "daemon.Connector" *-- "fake.Daemon"
+
+' "control.Runner" <|-- "fake.Gateway"
+
+' namespace grpc {
+'     interface Advertiser  {
+'         + AdvertiseList(from addr.IA, to addr.IA) ([]netaddr.IPPrefix, error)
+
+'     }
+'     class Discoverer << (S,Aquamarine) >> {
+'         + Remote addr.IA
+'         + Dialer grpc.Dialer
+'         + Paths control.PathMonitorRegistration
+
+'         + Gateways(ctx context.Context) ([]control.Gateway, error)
+
+'     }
+'     class IPPrefixServer << (S,Aquamarine) >> {
+'         + LocalIA addr.IA
+'         + Advertiser Advertiser
+'         + PrefixesAdvertised metrics.Gauge
+
+'         + Prefixes(ctx context.Context, req *gateway.PrefixesRequest) (*gateway.PrefixesResponse, error)
+
+'     }
+'     class PrefixFetcher << (S,Aquamarine) >> {
+'         + Remote addr.IA
+'         + Pather control.PathMonitorRegistration
+'         + Dialer grpc.Dialer
+
+'         + Prefixes(ctx context.Context, gateway *net.UDPAddr) ([]*net.IPNet, error)
+
+'     }
+'     class ProbeDispatcher << (S,Aquamarine) >> {
+'         - dispatch(conn net.PacketConn, raw []byte, addr net.Addr) error
+
+'         + Listen(ctx context.Context, conn net.PacketConn) error
+
+'     }
+' }
+
+' "control.Discoverer" <|-- "grpc.Discoverer"
+
+' namespace mock_control {
+'     class MockDataplaneSession << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockDataplaneSessionMockRecorder
+
+'         + EXPECT() *MockDataplaneSessionMockRecorder
+'         + Close() 
+'         + SetPaths(arg0 []snet.Path) error
+'         + Write(arg0 gopacket.Packet) 
+
+'     }
+'     class MockDataplaneSessionFactory << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockDataplaneSessionFactoryMockRecorder
+
+'         + EXPECT() *MockDataplaneSessionFactoryMockRecorder
+'         + New(arg0 byte, arg1 int, arg2 addr.IA, arg3 net.Addr) control.DataplaneSession
+
+'     }
+'     class MockDataplaneSessionFactoryMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockDataplaneSessionFactory
+
+'         + New(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}, arg2 <font color=blue>interface</font>{}, arg3 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockDataplaneSessionMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockDataplaneSession
+
+'         + Close() *gomock.Call
+'         + SetPaths(arg0 <font color=blue>interface</font>{}) *gomock.Call
+'         + Write(arg0 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockDeviceHandle << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockDeviceHandleMockRecorder
+
+'         + EXPECT() *MockDeviceHandleMockRecorder
+'         + AddRoute(arg0 context.Context, arg1 *control.Route) error
+'         + Close() error
+'         + DeleteRoute(arg0 context.Context, arg1 *control.Route) error
+'         + Read(arg0 []byte) (int, error)
+'         + Write(arg0 []byte) (int, error)
+
+'     }
+'     class MockDeviceHandleMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockDeviceHandle
+
+'         + AddRoute(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}) *gomock.Call
+'         + Close() *gomock.Call
+'         + DeleteRoute(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}) *gomock.Call
+'         + Read(arg0 <font color=blue>interface</font>{}) *gomock.Call
+'         + Write(arg0 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockDeviceOpener << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockDeviceOpenerMockRecorder
+
+'         + EXPECT() *MockDeviceOpenerMockRecorder
+'         + Open(arg0 context.Context, arg1 addr.IA) (control.Device, error)
+
+'     }
+'     class MockDeviceOpenerMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockDeviceOpener
+
+'         + Open(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockDiscoverer << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockDiscovererMockRecorder
+
+'         + EXPECT() *MockDiscovererMockRecorder
+'         + Gateways(arg0 context.Context) ([]control.Gateway, error)
+
+'     }
+'     class MockDiscovererMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockDiscoverer
+
+'         + Gateways(arg0 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockEngineFactory << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockEngineFactoryMockRecorder
+
+'         + EXPECT() *MockEngineFactoryMockRecorder
+'         + New(arg0 control.RoutingTable, arg1 []*control.SessionConfig, arg2 <font color=blue>map</font>[int][]byte) control.Worker
+
+'     }
+'     class MockEngineFactoryMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockEngineFactory
+
+'         + New(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}, arg2 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockGatewayWatcherFactory << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockGatewayWatcherFactoryMockRecorder
+
+'         + EXPECT() *MockGatewayWatcherFactoryMockRecorder
+'         + New(arg0 context.Context, arg1 addr.IA, arg2 control.GatewayWatcherMetrics) control.Runner
+
+'     }
+'     class MockGatewayWatcherFactoryMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockGatewayWatcherFactory
+
+'         + New(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}, arg2 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockPacketConnFactory << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockPacketConnFactoryMockRecorder
+
+'         + EXPECT() *MockPacketConnFactoryMockRecorder
+'         + New() (net.PacketConn, error)
+
+'     }
+'     class MockPacketConnFactoryMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockPacketConnFactory
+
+'         + New() *gomock.Call
+
+'     }
+'     class MockPathMonitor << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockPathMonitorMockRecorder
+
+'         + EXPECT() *MockPathMonitorMockRecorder
+'         + Register(arg0 context.Context, arg1 addr.IA, arg2 *policies.Policies, arg3 string) control.PathMonitorRegistration
+
+'     }
+'     class MockPathMonitorMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockPathMonitor
+
+'         + Register(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}, arg2 <font color=blue>interface</font>{}, arg3 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockPathMonitorRegistration << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockPathMonitorRegistrationMockRecorder
+
+'         + EXPECT() *MockPathMonitorRegistrationMockRecorder
+'         + Close() 
+'         + Get() pathhealth.Selection
+
+'     }
+'     class MockPathMonitorRegistrationMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockPathMonitorRegistration
+
+'         + Close() *gomock.Call
+'         + Get() *gomock.Call
+
+'     }
+'     class MockPktWriter << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockPktWriterMockRecorder
+
+'         + EXPECT() *MockPktWriterMockRecorder
+'         + Write(arg0 gopacket.Packet) 
+
+'     }
+'     class MockPktWriterMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockPktWriter
+
+'         + Write(arg0 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockPrefixConsumer << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockPrefixConsumerMockRecorder
+
+'         + EXPECT() *MockPrefixConsumerMockRecorder
+'         + Prefixes(arg0 addr.IA, arg1 control.Gateway, arg2 []*net.IPNet) error
+
+'     }
+'     class MockPrefixConsumerMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockPrefixConsumer
+
+'         + Prefixes(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}, arg2 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockPrefixFetcher << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockPrefixFetcherMockRecorder
+
+'         + EXPECT() *MockPrefixFetcherMockRecorder
+'         + Close() error
+'         + Prefixes(arg0 context.Context, arg1 *net.UDPAddr) ([]*net.IPNet, error)
+
+'     }
+'     class MockPrefixFetcherFactory << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockPrefixFetcherFactoryMockRecorder
+
+'         + EXPECT() *MockPrefixFetcherFactoryMockRecorder
+'         + NewPrefixFetcher(arg0 context.Context, arg1 control.Gateway) control.PrefixFetcher
+
+'     }
+'     class MockPrefixFetcherFactoryMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockPrefixFetcherFactory
+
+'         + NewPrefixFetcher(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockPrefixFetcherMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockPrefixFetcher
+
+'         + Close() *gomock.Call
+'         + Prefixes(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockPublisher << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockPublisherMockRecorder
+
+'         + EXPECT() *MockPublisherMockRecorder
+'         + AddRoute(arg0 control.Route) 
+'         + Close() 
+'         + DeleteRoute(arg0 control.Route) 
+
+'     }
+'     class MockPublisherFactory << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockPublisherFactoryMockRecorder
+
+'         + EXPECT() *MockPublisherFactoryMockRecorder
+'         + NewPublisher() control.Publisher
+
+'     }
+'     class MockPublisherFactoryMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockPublisherFactory
+
+'         + NewPublisher() *gomock.Call
+
+'     }
+'     class MockPublisherMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockPublisher
+
+'         + AddRoute(arg0 <font color=blue>interface</font>{}) *gomock.Call
+'         + Close() *gomock.Call
+'         + DeleteRoute(arg0 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockRoutingPolicyProvider << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockRoutingPolicyProviderMockRecorder
+
+'         + EXPECT() *MockRoutingPolicyProviderMockRecorder
+'         + RoutingPolicy() *routing.Policy
+
+'     }
+'     class MockRoutingPolicyProviderMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockRoutingPolicyProvider
+
+'         + RoutingPolicy() *gomock.Call
+
+'     }
+'     class MockRoutingTable << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockRoutingTableMockRecorder
+
+'         + EXPECT() *MockRoutingTableMockRecorder
+'         + ClearSession(arg0 int) error
+'         + Close() error
+'         + RouteIPv4(arg0 layers.IPv4) control.PktWriter
+'         + RouteIPv6(arg0 layers.IPv6) control.PktWriter
+'         + SetSession(arg0 int, arg1 control.PktWriter) error
+
+'     }
+'     class MockRoutingTableFactory << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockRoutingTableFactoryMockRecorder
+
+'         + EXPECT() *MockRoutingTableFactoryMockRecorder
+'         + New(arg0 []*control.RoutingChain) (control.RoutingTable, error)
+
+'     }
+'     class MockRoutingTableFactoryMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockRoutingTableFactory
+
+'         + New(arg0 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockRoutingTableMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockRoutingTable
+
+'         + ClearSession(arg0 <font color=blue>interface</font>{}) *gomock.Call
+'         + Close() *gomock.Call
+'         + RouteIPv4(arg0 <font color=blue>interface</font>{}) *gomock.Call
+'         + RouteIPv6(arg0 <font color=blue>interface</font>{}) *gomock.Call
+'         + SetSession(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockRoutingTableSwapper << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockRoutingTableSwapperMockRecorder
+
+'         + EXPECT() *MockRoutingTableSwapperMockRecorder
+'         + SetRoutingTable(arg0 control.RoutingTable) io.Closer
+
+'     }
+'     class MockRoutingTableSwapperMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockRoutingTableSwapper
+
+'         + SetRoutingTable(arg0 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockRunner << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockRunnerMockRecorder
+
+'         + EXPECT() *MockRunnerMockRecorder
+'         + Run(arg0 context.Context) error
+
+'     }
+'     class MockRunnerMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockRunner
+
+'         + Run(arg0 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockSessionPolicyParser << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockSessionPolicyParserMockRecorder
+
+'         + EXPECT() *MockSessionPolicyParserMockRecorder
+'         + Parse(arg0 context.Context, arg1 []byte) (control.SessionPolicies, error)
+
+'     }
+'     class MockSessionPolicyParserMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockSessionPolicyParser
+
+'         + Parse(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+'     class MockWorker << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockWorkerMockRecorder
+
+'         + EXPECT() *MockWorkerMockRecorder
+'         + Close(arg0 context.Context) error
+'         + Run(arg0 context.Context) error
+
+'     }
+'     class MockWorkerMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockWorker
+
+'         + Close(arg0 <font color=blue>interface</font>{}) *gomock.Call
+'         + Run(arg0 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+' }
+
+' "control.DataplaneSession" <|-- "mock_control.MockDataplaneSession"
+' "control.PktWriter" <|-- "mock_control.MockDataplaneSession"
+' "control.Device" <|-- "mock_control.MockDeviceHandle"
+' "control.DeviceOpener" <|-- "mock_control.MockDeviceOpener"
+' "control.Discoverer" <|-- "mock_control.MockDiscoverer"
+' "control.GatewayWatcherFactory" <|-- "mock_control.MockGatewayWatcherFactory"
+' "control.PacketConnFactory" <|-- "mock_control.MockPacketConnFactory"
+' "control.PathMonitor" <|-- "mock_control.MockPathMonitor"
+' "control.PathMonitorRegistration" <|-- "mock_control.MockPathMonitorRegistration"
+' "control.PktWriter" <|-- "mock_control.MockPktWriter"
+' "control.PrefixConsumer" <|-- "mock_control.MockPrefixConsumer"
+' "control.PrefixFetcher" <|-- "mock_control.MockPrefixFetcher"
+' "control.PrefixFetcherFactory" <|-- "mock_control.MockPrefixFetcherFactory"
+' "control.Publisher" <|-- "mock_control.MockPublisher"
+' "control.PublisherFactory" <|-- "mock_control.MockPublisherFactory"
+' "control.RoutingPolicyProvider" <|-- "mock_control.MockRoutingPolicyProvider"
+' "control.RoutingTableReader" <|-- "mock_control.MockRoutingTable"
+' "control.RoutingTableWriter" <|-- "mock_control.MockRoutingTable"
+' "control.RoutingTableFactory" <|-- "mock_control.MockRoutingTableFactory"
+' "control.RoutingTableSwapper" <|-- "mock_control.MockRoutingTableSwapper"
+' "control.Runner" <|-- "mock_control.MockRunner"
+' "control.SessionPolicyParser" <|-- "mock_control.MockSessionPolicyParser"
+' "control.Runner" <|-- "mock_control.MockWorker"
+' "control.Worker" <|-- "mock_control.MockWorker"
+
+' namespace mock_grpc {
+'     class MockAdvertiser << (S,Aquamarine) >> {
+'         - ctrl *gomock.Controller
+'         - recorder *MockAdvertiserMockRecorder
+
+'         + EXPECT() *MockAdvertiserMockRecorder
+'         + AdvertiseList(arg0 addr.IA, arg1 addr.IA) ([]netaddr.IPPrefix, error)
+
+'     }
+'     class MockAdvertiserMockRecorder << (S,Aquamarine) >> {
+'         - mock *MockAdvertiser
+
+'         + AdvertiseList(arg0 <font color=blue>interface</font>{}, arg1 <font color=blue>interface</font>{}) *gomock.Call
+
+'     }
+' }
+
+' "grpc.Advertiser" <|-- "mock_grpc.MockAdvertiser"
+
+' "__builtin__.int" #.. "control.Event"
+' "control.fontcolorbluefuncfontcontextContextaddrIADeviceerror" #.. "control.DeviceOpenerFunc"
+' "control.<font color=blue>map</font>[string]<font color=blue>struct</font>{}" #.. "control.gatewaySet"
+' "control.Device" #.. "control.DeviceHandle"
+' "control.[]SessionPolicy" #.. "control.SessionPolicies"
+@enduml
