@@ -34,9 +34,11 @@ go_library(
         "//go/lib/snet/path:go_default_library",
         "//go/lib/sock/reliable:go_default_library",
         "//go/pkg/gateway/control:go_default_library",
+        "@com_github_andreburgaud_crypt2go//padding:go_default_library",
         "@com_github_cloud9_tools_go_galoisfield//:go_default_library",
         "@com_github_google_gopacket//:go_default_library",
         "@com_github_google_gopacket//layers:go_default_library",
+        "@com_github_klauspost_reedsolomon//:go_default_library",
     ],
 )
 
