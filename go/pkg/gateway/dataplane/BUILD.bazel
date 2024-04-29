@@ -4,6 +4,7 @@ go_library(
     name = "go_default_library",
     srcs = [
         "anot.go",
+        "aont_rs.go",
         "atomicroutingtable.go",
         "diagnostics.go",
         "doc.go",
