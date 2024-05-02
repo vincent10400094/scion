@@ -85,9 +85,14 @@ http_archive(
 
 load("@rules_python//python:pip.bzl", "pip_install")
 
+register_toolchains("//:my_toolchain")
+
+
+
 pip_install(
     name = "pip3_deps",
     requirements = "//env/pip3:requirements.txt",
+    python_interpreter = "/home/cywu/.pyenv/versions/3.9.19/bin/python3.9",
 )
 
 http_archive(
