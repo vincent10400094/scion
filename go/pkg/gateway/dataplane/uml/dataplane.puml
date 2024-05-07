@@ -163,7 +163,7 @@ namespace control {
     Engine *-- DataplaneSessionFactory
     EngineController *-- EngineFactory
     EngineController "1" *-- Engine
-    Engine "1" *-- "*" DataplaneSession
+    Engine "1" *-- "*" DataplaneSession: create via ""**DataplaneSessionFactory.New()**"" 
     Engine ..|> Worker
     EngineFactory <|.. DefaultEngineFactory
 
@@ -233,14 +233,20 @@ namespace dataplane {
         + Run(ctx context.Context) error
 
     }
+    
+    note right of IngressServer::Conn
+        IngressServer use the method **ReadFrom** 
+        to read data from connection device to **b**
+    end note
+
     ' interface PathStatsPublisher  {
     '     + PublishEgressStats(fingerprint string, frames int64, bytes int64) 
 
     ' }
-    ' interface ReadConn  {
-    '     + ReadFrom(b []byte) (int, net.Addr, error)
+    interface ReadConn  {
+        + ReadFrom(b []byte) (int, net.Addr, error)
 
-    ' }
+    }
     ' class RoutingTable << (S,Aquamarine) >> {
     '     - indexToSubEntry <font color=blue>map</font>[int]*subEntry
     '     - indexToEntries <font color=blue>map</font>[int][]*entry
@@ -280,6 +286,11 @@ namespace dataplane {
         + SetPaths(paths []snet.Path) error
 
     }
+    note left of Session::run
+        ""**run**"" read frames from buffer in ""**encoder**"" constantly and
+        apply ""**splitAndSend_aont_rs**"" on frames then send frame via 
+        ""**sender**"".
+    end note
     class SessionMetrics << (S,Aquamarine) >> {
         + IPPktsSent metrics.Counter
         + IPPktBytesSent metrics.Counter
@@ -412,6 +423,7 @@ namespace dataplane {
     '     + String() string
 
     ' }
+
     class worker << (S,Aquamarine) >> {
         - numPaths uint8
         - rlists <font color=blue>map</font>[int]*reassemblyList
@@ -433,13 +445,18 @@ namespace dataplane {
         + Run(ctx context.Context) 
 
     }
+    note top of worker
+        worker reads frames from the Ring, and it process frames
+        with ""**processFrame**""
+    end note
 
 
-    DiagnosticsWriter <|-- RoutingTable
+    IngressServer *-- ReadConn
+
     ingressSender <|-- worker
 
     Session "1" *-- "many" sender
-    Session *-- encoder
+    Session *-- encoder : ""**Session.Write()**""
     Session *-- SessionMetrics
     frameBufGroup "1" *-- "many" frameBuf
 
@@ -460,6 +477,10 @@ gateway.Gateway *-- control.EngineController
 gateway.Gateway *-- dataplane.IngressServer
 control.DataplaneSession <|.. dataplane.Session
 control.Session *-- dataplane.Session
+
+'gateway.DataplaneSessionFactory struct contain a methon to create control.DataplaneSession
 control.DefaultEngineFactory *-- gateway.DataplaneSessionFactory
 
+
+gateway.DataplaneSessionFactory ..|> control.DataplaneSessionFactory
 @enduml
