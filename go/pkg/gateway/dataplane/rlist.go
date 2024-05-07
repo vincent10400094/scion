@@ -172,7 +172,8 @@ func (l *reassemblyList) tryReassemble(ctx context.Context) {
 	logger := log.FromCtx(ctx)
 	start := l.entries.Front()
 	startFrameGroup := start.Value.(*frameBufGroup)
-	if !startFrameGroup.TryAndCombine() {
+	// if !startFrameGroup.TryAndCombine() {
+	if !startFrameGroup.TryAndCombine_AONT_RS() {
 		return
 	}
 	startFrame := startFrameGroup.combined
@@ -188,7 +189,8 @@ func (l *reassemblyList) tryReassemble(ctx context.Context) {
 	framingError := false
 	for e := start.Next(); e != nil; e = e.Next() {
 		currFrameGroup := e.Value.(*frameBufGroup)
-		if !currFrameGroup.TryAndCombine() {
+		// if !currFrameGroup.TryAndCombine() {
+		if !currFrameGroup.TryAndCombine_AONT_RS() {
 			return
 		}
 		currFrame := currFrameGroup.combined
