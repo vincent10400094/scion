@@ -268,7 +268,7 @@ func (fbg *frameBufGroup) TryAndCombine() bool {
 	return true
 }
 
-func (fbg *frameBufGroup) TryAndCombine_ANOT_RS() bool {
+func (fbg *frameBufGroup) TryAndCombine_AONT_RS() bool {
 	if fbg.isCombined {
 		return true
 	}
