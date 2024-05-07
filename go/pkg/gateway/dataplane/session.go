@@ -108,6 +108,7 @@ func (s *Session) Write(packet gopacket.Packet) {
 	if len(s.senders) == 0 {
 		return
 	}
+	fmt.Printf("packet size %v\n", packet.Data())
 	s.encoder.Write(packet.Data())
 }
 
@@ -210,17 +211,24 @@ func (s *Session) run() {
 		}
 
 		// Split and interleave the packets, then send through selected paths.
-		s.splitAndSend(frame)
+		// s.splitAndSend(frame)
+		s.splitAndSend_aont_rs(frame)
 		s.seq++
 	}
 }
 
 // AONT-RS version of splitAndSend
 func (s *Session) splitAndSend_aont_rs(frame []byte) {
+	// fmt.Printf("Using SplitAndSend_aont_rs\n")
 	n := len(s.senders)
 	if n>=3 {
+		fmt.Printf("Path num bigger than or equal to 3\n")
+
+		// Usint AONT_RS
 		// The AONT_RS transfert a frame two 3 shards, the reciever need 2 out
 		// of 3 for recovering.
+		fmt.Printf("Splitandsend_aont_rs Frame size %v\n", len(frame))
+		fmt.Printf("Splitandsend_aont_rs Frame size %v\n", frame)
 		splits := AONT_RS_Encode(frame, 2, 1)
 		index := binary.BigEndian.Uint16(frame[indexPos : indexPos+2])
 		streamID := binary.BigEndian.Uint32(frame[streamPos : streamPos+4])
@@ -229,9 +237,13 @@ func (s *Session) splitAndSend_aont_rs(frame []byte) {
 			sender := s.senders[i]
 			encodedFrame := s.encodeFrame(splits[i], index, streamID, uint8(i))
 			sender.Write(encodedFrame)
+			fmt.Printf("encodedFrame size %v\n", len(encodedFrame))
 		}
 
 	}else{
+		// Using AONT
+		// fmt.Printf("Path num less than 3\n")
+
 		dataLen := (len(frame)+n-1-hdrLen)/n
 		splits := make([][]byte, n)
 		for i := 0; i < n; i++ {
