@@ -2,11 +2,8 @@ package dataplane
 
 import (
 	"crypto/aes"
-	// "crypto/cipher"
 	"crypto/rand"
 	"fmt"
-	"bytes"
-	// "encoding/hex"
 	"encoding/binary"
 	"github.com/andreburgaud/crypt2go/padding"
 	"crypto/sha256"
@@ -34,7 +31,11 @@ func AONT_Encode(message []byte) []byte{
 		panic(err)
 	}
 
-	// padding message
+	// print message length
+	// fmt.Printf("message length size %v\n", len(message))
+	// fmt.Printf("key size %v\n", len(key))
+
+// padding message
 
 	aes_block, err := aes.NewCipher(key)
 	if err != nil {
@@ -49,48 +50,49 @@ func AONT_Encode(message []byte) []byte{
 	}
 	s := len(p_message) / aes.BlockSize
 
+	// fmt.Printf("message size after padding %v\n", len(p_message))
+
 	// canary block, the canary block is set to be zeros
 	// | p_message | canary(16 bytes) | key (32 bytes) |
 	// d0, d1,...ds-1, ds(canary), ds+1, ds+2
-	encoded_text := make([]byte, len(p_message) + 3*aes.BlockSize)
-	copy(encoded_text, p_message)
-	copy(encoded_text[len(p_message):], canary_block)
-
+	encoded_text := append(p_message, canary_block...)
 
 	// encoding
 	for i:=0; i<=s; i++ {
 		mask := make([]byte, aes.BlockSize)
 		binary.BigEndian.PutUint64(mask, uint64(i+1))
-		// if err != nil {
-		// 	panic(err)
-		// }
 
 		aes_block.Encrypt(mask,mask)
 		for j:= 0; j<aes.BlockSize; j++ {
 			encoded_text[i*aes.BlockSize+j] ^= mask[j]
 		}
 	}
-	// compute c_{s+1}
+	// compute d_{s+1}
 	var hash_value = sha256.Sum256(encoded_text[:(s+1)*aes.BlockSize])
-	copy(encoded_text[(s+1)*aes.BlockSize:], hash_value[:])
+	encoded_text = append(encoded_text, hash_value[:]...)
 
 	for j:=0; j < 2*aes.BlockSize; j++ {
 		encoded_text[(s+1)*aes.BlockSize+j] ^= key[j]
 	}
+	// fmt.Printf("encoded text %v\n", len(encoded_text))
+	// fmt.Printf("Encode text %v\n", encoded_text)
 	return encoded_text
 }
 
-func RS_Encode(encoded_text []byte, nb_data_shards int, nb_parties_shards int) [][]byte{
+func RS_Decode(shards [][]byte, nb_data_shards int, nb_parties_shards int) []byte{
+	// fmt.Printf("Before RS decode  text %v\n", shards)
 	rs_enc, _ :=  reedsolomon.New(nb_data_shards,nb_parties_shards)
-	shards, _ := rs_enc.Split(encoded_text)
-	_ = rs_enc.Encode(shards)
-	ok, _ := rs_enc.Verify(shards)
-	if ok {
-		fmt.Println("ok")
+	err := rs_enc.Reconstruct(shards)
+	if err != nil {
+		panic("Reconstruct error")
 	}
-	return shards
+	var rs_decoded []byte
+	for i := 0; i<nb_data_shards; i++ {
+		rs_decoded = append(rs_decoded, shards[i]...)
+	}
+	// fmt.Printf("rebuild RS decode  text %v\n", rs_decoded)
+	return rs_decoded
 }
-
 
 
 
@@ -135,20 +137,19 @@ func AONT_Decode(encoded_text []byte) []byte {
 
 }
 
-func RS_Decode(shards [][]byte, nb_data_shards int, nb_parties_shards int) []byte{
+func RS_Encode(encoded_text []byte, nb_data_shards int, nb_parties_shards int) [][]byte{
 	rs_enc, _ :=  reedsolomon.New(nb_data_shards,nb_parties_shards)
-	err := rs_enc.Reconstruct(shards)
-	if err != nil {
-		panic("Reconstruct error")
-	}
-	data_raw := make([]byte, len(shards[0])*nb_data_shards)
-	w := bytes.NewBuffer(data_raw)
-	err = rs_enc.Join(w, shards, len(data_raw))
-	if err!=nil{
-		panic("Join fail")
-	}
-	return data_raw
+	shards, _ := rs_enc.Split(encoded_text)
+	_ = rs_enc.Encode(shards)
+	// fmt.Printf("shards %v\n", shards)
+	// ok, _ := rs_enc.Verify(shards)
+	// if ok {
+	// 	fmt.Println("Reed Solomon encode ok")
+	// }
+	return shards
 }
+
+
 
 func main(){
 	plaintext := []byte("some plaintext")
