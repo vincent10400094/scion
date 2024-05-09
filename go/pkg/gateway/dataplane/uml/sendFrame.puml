@@ -1,0 +1,37 @@
+@startuml sendFrame
+
+component Session
+component Encoder
+component Sender{
+    portout conn
+}
+"IP pakcets" --> Session
+
+Session --> Encoder : 1.**Write**
+Session --> Encoder : 2.**Read** 
+Session --> Sender : 3.**SplitAndSend**
+
+conn --> Network
+
+note as Read
+    When Session **Read** frame 
+    from Encoder, it read several IP pakets at once. 
+    Therefore, SplitAndSend process several IP packets.  
+end note
+
+Read . Session
+
+note as Split
+    Session applies AONT-RS to a batch of IP packets 
+    obtained by **Read**, encapulate shards with 
+    SIG header, and Sender sends SIG frame via **conn** interface. 
+end note
+
+Session . Split
+
+note as RMconn
+    **conn** can be emulated by chan []byte. See session_test.go
+end note
+
+conn . RMconn
+@enduml

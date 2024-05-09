@@ -1,0 +1,45 @@
+@startuml recvFrame
+
+component IngressServer{
+    port "conn, **ReadConn**"
+}
+component worker1
+component worker2
+component rlist{
+    portout tunIO
+}
+"SIG frame" --> "conn, **ReadConn**"
+
+IngressServer --> worker1 :dispatch()
+IngressServer --> worker2
+
+
+note as RMdispatch
+    ingressserver dispatchs frames to workers by 
+    write frame on the ringBuf of worker. 
+end note
+RMdispatch . IngressServer
+
+
+
+
+note as RMprocessFrame 
+    worker processes raw data in ringBuf,
+    parses then into SIG frames,
+    and then write frames into rlist with 
+    **Insert** method. 
+end note
+
+worker1 .right. RMprocessFrame
+worker1 --> rlist : processFrame()
+
+note as RMInsert
+    **Insert()**
+    - put frame into frameGroup. 
+    - call **tryReassemble()**
+    - If tryReassemble succees, call **collectAndWrite**
+end note
+rlist .right.  RMInsert
+
+tunIO --> "IP packets"
+@enduml
