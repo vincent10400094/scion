@@ -228,7 +228,7 @@ func (s *Session) splitAndSend_aont_rs(frame []byte) {
 		// The AONT_RS transfert a frame two 3 shards, the reciever need 2 out
 		// of 3 for recovering.
 		fmt.Printf("Splitandsend_aont_rs Frame size %v\n", len(frame))
-		fmt.Printf("Splitandsend_aont_rs Frame size %v\n", frame)
+		fmt.Printf("Splitandsend_aont_rs Frame frame %v\n", frame)
 		splits := AONT_RS_Encode(frame, 2, 1)
 		index := binary.BigEndian.Uint16(frame[indexPos : indexPos+2])
 		streamID := binary.BigEndian.Uint32(frame[streamPos : streamPos+4])

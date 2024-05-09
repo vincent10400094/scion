@@ -117,6 +117,7 @@ func (w *worker) processFrame(ctx context.Context, frame *frameBuf) {
 	frame.completePktsProcessed = index == 0xffff
 	// Add to frame buf reassembly list.
 	rlist := w.getRlist(epoch)
+	fmt.Printf("[worker - processFrame] frame: %v\n", frame)
 	rlist.Insert(ctx, frame)
 }
 

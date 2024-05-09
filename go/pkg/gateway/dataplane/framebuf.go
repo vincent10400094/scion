@@ -293,11 +293,15 @@ func (fbg *frameBufGroup) TryAndCombine_AONT_RS() bool {
 
 	for e:= fbg.frames.Front(); e != nil; e = e.Next(){
 		currFrameBuf := e.Value.(*frameBuf)
+		// fmt.Printf("[framebuf-TryAndCombine_AONT_RS] %v\n", currFrameBuf.raw)
 		currPathIdx := GetPathIndex(currFrameBuf)
 		data[currPathIdx] = make([]byte, ref.frameLen-hdrLen)
+		copy(data[currPathIdx], currFrameBuf.raw[hdrLen:])
 	}
+	fmt.Printf("[framebuf-TryAndCombine_AONT_RS]%v\n", data)
 
 	copy(frame.raw[hdrLen:], AONT_RS_Decode(data,2,1))
+	// fmt.Printf("[framebuf-TryAndCombine_AONT_RS] after AONT_RS decode %v\n", frame.raw)
 
 	frame.frameLen = (ref.frameLen-hdrLen)*2 + hdrLen
 	fbg.isCombined = true

@@ -71,7 +71,7 @@ func newReassemblyList(epoch int, capacity int, numPaths uint8, s ingressSender,
 // list and released to the pool of frame buffers.
 func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 	logger := log.FromCtx(ctx)
-	// fmt.Println("[Received] ", "Group seq:", frame.seqNr >> 8, "pathID:", frame.seqNr & 0xff)
+	fmt.Println("[Received] ", "Group seq:", frame.seqNr>>8, "pathID:", frame.seqNr&0xff)
 	// If this is the first frame, write all complete packets to the wire and
 	// add the frame to the reassembly list if it contains a fragment at the end.
 	if l.entries.Len() == 0 {
@@ -156,6 +156,7 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 	if groupSeqNr == lastFrameGroup.groupSeqNr+1 {
 		l.insertNewGroup(frame)
 	}
+	// fmt.Println("[rlist] call tryReassembly  ", "Group seq:", frame.seqNr>>8, "pathID:", frame.seqNr&0xff)
 	l.tryReassemble(ctx)
 	// l.printInfo()
 }
@@ -177,6 +178,7 @@ func (l *reassemblyList) tryReassemble(ctx context.Context) {
 		return
 	}
 	startFrame := startFrameGroup.combined
+	fmt.Printf("[rlist - TryAndCombine_AONT_RS] currFrame: %v\n", startFrame)
 	startFrame.ProcessCompletePkts(ctx)
 	if startFrame.frag0Start == 0 {
 		// The first frame does not contain a packet start.
@@ -184,6 +186,7 @@ func (l *reassemblyList) tryReassemble(ctx context.Context) {
 		l.removeEntry(start)
 		return
 	}
+	fmt.Printf("[rlist - TryAndCombine_AONT_RS] currFrame: %v\n", startFrame)
 	bytes := startFrame.frameLen - startFrame.frag0Start
 	canReassemble := false
 	framingError := false
@@ -194,6 +197,7 @@ func (l *reassemblyList) tryReassemble(ctx context.Context) {
 			return
 		}
 		currFrame := currFrameGroup.combined
+		// fmt.Printf("[rlist - TryAndCombine_AONT_RS] currFrame: %v\n", currFrame)
 		// Add number of bytes contained in this frame. This potentially adds
 		// too much, but we are only using it to detect whether we potentially
 		// have everything we need.
