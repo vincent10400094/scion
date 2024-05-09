@@ -17,7 +17,9 @@ package dataplane
 import (
 	"context"
 	"net"
+	"fmt"
 	"testing"
+	"encoding/binary"
 
 	"github.com/stretchr/testify/assert"
 
@@ -65,8 +67,10 @@ func SendFrame(t *testing.T, w *worker, data []byte) {
 	w.processFrame(context.Background(), f)
 }
 
-func Split_aont_rs(data []byte, data_shards int, parity_shards int) [][]byte{
-	splits := AONT_RS_Encode(data, data_shards, parity_shards);
+func Split_aont_rs(frame []byte, data_shards int, parity_shards int) [][]byte{
+	payload := frame[hdrLen:]
+	fmt.Printf("[worker_test Split_aont_rs] payload: %v\n", payload)
+	splits := AONT_RS_Encode(payload, data_shards, parity_shards);
 
 	return splits
 
@@ -99,13 +103,35 @@ func Split(data []byte, n int) [][]byte {
 	return splits
 }
 
-func SplitAndSend_aont_rs(t *testing.T, w *worker, data []byte){
+func encodeFrame(pkt []byte, index uint16, streamID uint32, pathId uint8,
+	sessionID uint8, seq uint64 ) []byte {
+	frame := make([]byte, len(pkt)+hdrLen)
+	copy(frame[hdrLen:], pkt)
+	// Write the header.
+	frame[versionPos] = 0
+	frame[sessPos] = sessionID
+	binary.BigEndian.PutUint16(frame[indexPos:indexPos+2], index)
+	binary.BigEndian.PutUint32(frame[streamPos:streamPos+4], streamID&0xfffff)
+	// The last 8 bits of sequence number is used as path ID.
+	// seq := s.seq
+	binary.BigEndian.PutUint64(frame[seqPos:seqPos+8], (seq<<8)+uint64(pathId))
+
+	return frame
+}
+
+func SplitAndSend_aont_rs(t *testing.T, w *worker, frame []byte){
 	data_shards := 2
 	parity_shards := 1
-	splits := Split_aont_rs(data, data_shards, parity_shards)
-	t.Log(splits);
+	splits := Split_aont_rs(frame, data_shards, parity_shards)
+
+	var sessionID uint8 = frame[sessPos]
+	index := binary.BigEndian.Uint16(frame[indexPos : indexPos+2])
+	streamID := binary.BigEndian.Uint32(frame[streamPos : streamPos+4])
+	seq := binary.BigEndian.Uint64(frame[seqPos: seqPos+8]);
+
+
 	for i := 0; i<data_shards + parity_shards; i++{
-		SendFrame(t, w, splits[i])
+		SendFrame(t, w, encodeFrame(splits[i], index, streamID, uint8(i), sessionID, seq))
 	}
 }
 
@@ -137,6 +163,10 @@ func TestParsing(t *testing.T) {
 		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
 		// Payload.
 		101, 102, 103,
+
+		// 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
+		// 64 0 0 23 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
+		// 101 102 103
 	})
 
 	t.Log(mt)
