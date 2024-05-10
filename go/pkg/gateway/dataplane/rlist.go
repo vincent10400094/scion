@@ -178,7 +178,7 @@ func (l *reassemblyList) tryReassemble(ctx context.Context) {
 		return
 	}
 	startFrame := startFrameGroup.combined
-	fmt.Printf("[rlist - TryAndCombine_AONT_RS] currFrame: %v\n", startFrame)
+	fmt.Printf("[rlist - TryAndCombine_AONT_RS] startFrame after AONT-RS Decode: %v\n, %v", startFrame, startFrame.raw[:startFrame.frameLen])
 	startFrame.ProcessCompletePkts(ctx)
 	if startFrame.frag0Start == 0 {
 		// The first frame does not contain a packet start.
@@ -186,7 +186,6 @@ func (l *reassemblyList) tryReassemble(ctx context.Context) {
 		l.removeEntry(start)
 		return
 	}
-	fmt.Printf("[rlist - TryAndCombine_AONT_RS] currFrame: %v\n", startFrame)
 	bytes := startFrame.frameLen - startFrame.frag0Start
 	canReassemble := false
 	framingError := false

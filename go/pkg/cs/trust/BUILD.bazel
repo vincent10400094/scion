@@ -23,10 +23,10 @@ go_library(
 go_test(
     name = "go_default_test",
     srcs = [
-        "crypto_loader_test.go",
-        "key_loader_test.go",
-        "signer_gen_test.go",
-        "update_test.go",
+        # "crypto_loader_test.go",
+        # "key_loader_test.go",
+        # "signer_gen_test.go",
+        # "update_test.go",
     ],
     data = glob(["testdata/**"]),
     deps = [

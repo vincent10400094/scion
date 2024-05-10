@@ -1,0 +1,20 @@
+digraph g{
+    rankdir=LR;
+    node [shape=record];
+    4 [label = "{<data>4 |<ref>}"];    
+    7 [label = "{<data>7 |<ref>}"];
+    1 [label = "{<data>1 |<ref>}"];
+    
+    node [shape=none]
+    none1 [label = ""];
+    none2 [label = ""];
+    indir;
+    
+    edge[weight=2];
+    none1 -> 4 [arrowhead=vee];
+    4:ref:c -> 7 [arrowhead=vee, arrowtail=dot, dir=both, tailclip=false];
+    7:ref:c -> 1 [arrowhead=vee, arrowtail=dot, dir=both, tailclip=false];
+    1:ref:c -> none2 [arrowhead=vee, arrowtail=dot, dir=both, tailclip=false];
+    edge[weight=1];
+    indir -> 4:ref;
+}

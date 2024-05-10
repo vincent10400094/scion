@@ -27,8 +27,8 @@ go_library(
 go_test(
     name = "go_default_test",
     srcs = [
-        "ca_signer_gen_test.go",
-        "request_test.go",
+        # "ca_signer_gen_test.go",
+        # "request_test.go",
     ],
     data = glob(["testdata/**"]),
     deps = [

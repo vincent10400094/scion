@@ -15,8 +15,9 @@ IngressServer --> worker2
 
 
 note as RMdispatch
-    ingressserver dispatchs frames to workers by 
-    write frame on the ringBuf of worker. 
+    ingressserver dispatchs frames to workers 
+    according to sessionID and source IP addr
+    by write frame on the ringBuf of worker. 
 end note
 RMdispatch . IngressServer
 
@@ -27,7 +28,8 @@ note as RMprocessFrame
     worker processes raw data in ringBuf,
     parses then into SIG frames,
     and then write frames into rlist with 
-    **Insert** method. 
+    **Insert** method, according to value of 
+    **stream** field.
 end note
 
 worker1 .right. RMprocessFrame

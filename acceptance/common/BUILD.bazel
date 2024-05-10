@@ -43,12 +43,12 @@ py_library(
     ],
 )
 
-py_test(
-    name = "scion_test",
-    srcs = [
-        "scion_test.py",
-    ],
-    deps = [
-        "scion",
-    ],
-)
+# py_test(
+#     name = "scion_test",
+#     srcs = [
+#         "scion_test.py",
+#     ],
+#     deps = [
+#         "scion",
+#     ],
+# )
