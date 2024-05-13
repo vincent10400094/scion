@@ -34,6 +34,7 @@ type reassemblyList struct {
 	numPaths          uint8
 	snd               ingressSender
 	markedForDeletion bool
+	smallestGroupSeq	  uint64
 	entries           *list.List
 	buf               *bytes.Buffer
 	tooOld            metrics.Counter
@@ -53,6 +54,7 @@ func newReassemblyList(epoch int, capacity int, numPaths uint8, s ingressSender,
 		numPaths:          numPaths,
 		snd:               s,
 		markedForDeletion: false,
+		smallestGroupSeq: 0,
 		entries:           list.New(),
 		buf:               bytes.NewBuffer(make([]byte, 0, frameBufCap)),
 	}
@@ -72,13 +74,22 @@ func newReassemblyList(epoch int, capacity int, numPaths uint8, s ingressSender,
 func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 	logger := log.FromCtx(ctx)
 	fmt.Println("\t\t[rlist] Get frame with", "Group seq:", frame.seqNr>>8, "pathID:", frame.seqNr&0xff)
+
+	groupSeqNr := frame.seqNr >> 8
+	// Ignore the group seq number less than processedseq
+	if groupSeqNr < l.smallestGroupSeq{
+		increaseCounterMetric(l.tooOld, 1)
+		frame.Release()
+		return
+	}
+
+
 	// If this is the first frame, write all complete packets to the wire and
 	// add the frame to the reassembly list if it contains a fragment at the end.
 	if l.entries.Len() == 0 {
 		l.insertNewGroup(frame)
 		return
 	}
-	groupSeqNr := frame.seqNr >> 8
 	fmt.Printf("\t\t[rlist] number of group before insering: %v\n", l.entries.Len() )
 	first := l.entries.Front()
 	firstFrameGroup := first.Value.(*frameBufGroup)
@@ -100,6 +111,7 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 			"currentNewest", lastFrameGroup.groupSeqNr)
 		increaseCounterMetric(l.evicted, float64(l.entries.Len()))
 		l.removeAll()
+		l.smallestGroupSeq = groupSeqNr
 		l.insertNewGroup(frame)
 		fmt.Printf("\t\t\t[debug] 2\n" )
 		return
@@ -277,6 +289,7 @@ func (l *reassemblyList) collectAndWrite(ctx context.Context) {
 
 func (l *reassemblyList) removeEntry(e *list.Element) {
 	frameGroup := e.Value.(*frameBufGroup)
+	l.smallestGroupSeq = frameGroup.groupSeqNr+1
 	frameGroup.Release()
 	l.entries.Remove(e)
 }

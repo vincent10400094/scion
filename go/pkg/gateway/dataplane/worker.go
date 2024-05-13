@@ -117,7 +117,8 @@ func (w *worker) processFrame(ctx context.Context, frame *frameBuf) {
 	frame.completePktsProcessed = index == 0xffff
 	// Add to frame buf reassembly list.
 	rlist := w.getRlist(epoch)
-	fmt.Printf("\t[worker] receiving frame: \n\t%v\n\t%v\n", frame, frame.raw[:frame.frameLen])
+	// fmt.Printf("\t[worker] receiving frame: \n\t%v\n\t%v\n", frame, frame.raw[:frame.frameLen])
+	fmt.Printf("\t[worker] receiving frame: \n\t%v\n", frame)
 	rlist.Insert(ctx, frame)
 }
 
