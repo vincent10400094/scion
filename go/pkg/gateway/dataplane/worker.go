@@ -63,7 +63,7 @@ func newWorker(remote *snet.UDPAddr, sessID uint8,
 		rlists:  make(map[int]*reassemblyList),
 		tunIO:   tunIO,
 		Metrics: metrics,
-		numPaths: 2, // need to be changed later
+		numPaths: 3, // need to be changed later
 	}
 
 	return worker

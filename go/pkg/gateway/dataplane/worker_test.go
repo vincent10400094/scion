@@ -21,14 +21,11 @@ import (
 	"net"
 	"testing"
 
-	"github.com/fatih/color"
 	"github.com/scionproto/scion/go/lib/ringbuf"
 	"github.com/scionproto/scion/go/lib/snet"
 	"github.com/scionproto/scion/go/lib/xtest"
 	"github.com/stretchr/testify/assert"
 )
-
-var info = color.New(color.FgWhite, color.BgGreen).SprintFunc()
 
 type MockTun struct {
 	packets [][]byte
@@ -123,7 +120,7 @@ func encodeFrame(pkt []byte, index uint16, streamID uint32, pathId uint8,
 	binary.BigEndian.PutUint32(frame[streamPos:streamPos+4], streamID&0xfffff)
 	// The last 8 bits of sequence number is used as path ID.
 	// seq := s.seq
-	binary.BigEndian.PutUint64(frame[seqPos:seqPos+8], (seq<<8)+uint64(pathId))
+	binary.BigEndian.PutUint64(frame[seqPos:seqPos+8], seq+uint64(pathId))
 
 	return frame
 }
@@ -175,9 +172,6 @@ func TestParsing(t *testing.T) {
 		// Payload.
 		101, 102, 103,
 
-		// 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0,
-		// 64 0 0 23 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0
-		// 101 102 103
 	})
 
 	t.Log(mt)
