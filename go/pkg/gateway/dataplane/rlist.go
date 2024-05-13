@@ -71,7 +71,7 @@ func newReassemblyList(epoch int, capacity int, numPaths uint8, s ingressSender,
 // list and released to the pool of frame buffers.
 func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 	logger := log.FromCtx(ctx)
-	fmt.Println("[Received] ", "Group seq:", frame.seqNr>>8, "pathID:", frame.seqNr&0xff)
+	fmt.Println("\t\t[rlist] Get frame with", "Group seq:", frame.seqNr>>8, "pathID:", frame.seqNr&0xff)
 	// If this is the first frame, write all complete packets to the wire and
 	// add the frame to the reassembly list if it contains a fragment at the end.
 	if l.entries.Len() == 0 {
@@ -79,6 +79,7 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 		return
 	}
 	groupSeqNr := frame.seqNr >> 8
+	fmt.Printf("\t\t[rlist] number of group before insering: %v\n", l.entries.Len() )
 	first := l.entries.Front()
 	firstFrameGroup := first.Value.(*frameBufGroup)
 	// Check whether frame is too old.
@@ -87,6 +88,7 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 		frame.Release()
 		return
 	}
+	fmt.Printf("\t\t\t[debug] 1\n" )
 	last := l.entries.Back()
 	lastFrameGroup := last.Value.(*frameBufGroup)
 
@@ -99,6 +101,7 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 		increaseCounterMetric(l.evicted, float64(l.entries.Len()))
 		l.removeAll()
 		l.insertNewGroup(frame)
+		fmt.Printf("\t\t\t[debug] 2\n" )
 		return
 	}
 	// Check if we have capacity.
@@ -118,17 +121,20 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 			curr = curr.Next()
 		}
 		currFrameGroup := curr.Value.(*frameBufGroup)
+		fmt.Printf("\t\t\t[debug] 3\n" )
 		if currFrameGroup.groupSeqNr != groupSeqNr {
 			// Should never happen.
 			logger.Error("Cannot find frame group", "groupSeqNr", groupSeqNr)
 			// Safest to remove all frames in the list.
 			l.removeBefore(last)
+			fmt.Printf("\t\t\t[debug] 4\n" )
 			frame.Release()
 			return
 		}
 		frameIndex := GetPathIndex(frame)
 		if frameIndex >= currFrameGroup.numPaths {
 			logger.Error(fmt.Sprintf("Cannot assign path index %d for %d paths.", frameIndex, currFrameGroup.numPaths))
+			fmt.Printf("\t\t\t[debug] 5\n" )
 			return
 		}
 		frameInserted := false
@@ -143,11 +149,13 @@ func (l *reassemblyList) Insert(ctx context.Context, frame *frameBuf) {
 			if currFrameIndex > frameIndex {
 				frameInserted = true
 				currFrameGroup.frames.InsertBefore(frame, e)
+				fmt.Printf("\t\t\t[debug] 6\n" )
 				break
 			}
 		}
 		if !frameInserted {
 			currFrameGroup.frames.PushBack(frame)
+			fmt.Printf("\t\t\t[debug] 7\n" )
 		}
 		currFrameGroup.frameCnt++
 	}
@@ -170,7 +178,9 @@ func (l *reassemblyList) insertNewGroup(frame *frameBuf) {
 
 // tryReassemble checks if a packet can be reassembled from the reassembly list.
 func (l *reassemblyList) tryReassemble(ctx context.Context) {
+	fmt.Printf("\t\t[rlist] tryReassemble\n")
 	logger := log.FromCtx(ctx)
+	fmt.Printf("\t\t[rlist] linkedlist length %v\n", l.entries.Len())
 	start := l.entries.Front()
 	startFrameGroup := start.Value.(*frameBufGroup)
 	// if !startFrameGroup.TryAndCombine() {
@@ -178,7 +188,7 @@ func (l *reassemblyList) tryReassemble(ctx context.Context) {
 		return
 	}
 	startFrame := startFrameGroup.combined
-	fmt.Printf("[rlist - TryAndCombine_AONT_RS] startFrame after AONT-RS Decode: %v\n, %v", startFrame, startFrame.raw[:startFrame.frameLen])
+	fmt.Printf("\t\t[rlist] startFrame after AONT-RS Decode: %v\n\t\t%v\n", startFrame, startFrame.raw[:startFrame.frameLen])
 	startFrame.ProcessCompletePkts(ctx)
 	if startFrame.frag0Start == 0 {
 		// The first frame does not contain a packet start.
@@ -186,6 +196,7 @@ func (l *reassemblyList) tryReassemble(ctx context.Context) {
 		l.removeEntry(start)
 		return
 	}
+	fmt.Printf("\t\t[rlist] startFrame after AONT-RS Decode/ProcessCompletePkt: %v\n\t\t%v\n", startFrame, startFrame.raw[:startFrame.frameLen])
 	bytes := startFrame.frameLen - startFrame.frag0Start
 	canReassemble := false
 	framingError := false
@@ -214,6 +225,8 @@ func (l *reassemblyList) tryReassemble(ctx context.Context) {
 			break
 		}
 	}
+	fmt.Printf("\t\t[rlist] linkedlist length after doing thing %v\n", l.entries.Len())
+
 	if canReassemble {
 		l.collectAndWrite(ctx)
 	} else if framingError {
@@ -225,6 +238,7 @@ func (l *reassemblyList) tryReassemble(ctx context.Context) {
 // collectAndWrite reassembles the packet in the reassembly list and writes it
 // out to the buffer. It will also write every complete packet in the last frame.
 func (l *reassemblyList) collectAndWrite(ctx context.Context) {
+	fmt.Printf("\t\t[rlist] collectAndWrite\n")
 	logger := log.FromCtx(ctx)
 	start := l.entries.Front()
 	startFrame := start.Value.(*frameBufGroup).combined
@@ -268,6 +282,7 @@ func (l *reassemblyList) removeEntry(e *list.Element) {
 }
 
 func (l *reassemblyList) removeProcessed() {
+	fmt.Printf("\t\t[rlist] Inside remove Processed()\n")
 	var next *list.Element
 	for e := l.entries.Front(); e != nil; e = next {
 		frame := e.Value.(*frameBufGroup)
