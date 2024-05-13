@@ -298,17 +298,17 @@ func (fbg *frameBufGroup) TryAndCombine_AONT_RS() bool {
 		data[currPathIdx] = make([]byte, ref.frameLen-hdrLen)
 		copy(data[currPathIdx], currFrameBuf.raw[hdrLen:])
 	}
-	fmt.Printf("[framebuf-TryAndCombine_AONT_RS]%v\n", data)
+	// fmt.Printf("\t\t[AONT_RS] Before decode %v\n", data)
 
-	copy(frame.raw[hdrLen:], AONT_RS_Decode(data,2,1))
+	sigPayload:= AONT_RS_Decode(data,2,1)
+	fmt.Printf("\t\t\t[AONT_RS] after decode %v\n", sigPayload)
+
+	copy(frame.raw[hdrLen:], sigPayload)
 	// fmt.Printf("[framebuf-TryAndCombine_AONT_RS] after AONT_RS decode %v\n", frame.raw)
 
-	frame.frameLen = (ref.frameLen-hdrLen)*2 + hdrLen
+	frame.frameLen = hdrLen + len(sigPayload)
 	fbg.isCombined = true
 
-	// I think we don't need to unpad
-	// because there will not be another packet after the padding
-	frame.frameLen = (ref.frameLen-hdrLen)*2 + hdrLen
 
 	return true
 }
