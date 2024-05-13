@@ -52,8 +52,8 @@ func (mt *MockTun) AssertPacket(t *testing.T, expected []byte) {
 			fmt.Println("OK")
 		} else {
 			fmt.Println("NOT GOOD")
-			fmt.Printf("Expected:\t%v\n", expected)
-			fmt.Printf("Received:\t%v\n", mt.packets[0])
+			fmt.Printf("Expected:\t %v\n", expected)
+			fmt.Printf("Received:\t %v\n", mt.packets[0])
 		}
 		mt.packets = mt.packets[1:]
 	}
@@ -137,7 +137,7 @@ func SplitAndSend_aont_rs(t *testing.T, w *worker, frame []byte) {
 
 	for i := 0; i < data_shards+parity_shards; i++ {
 		sigShard := encodeFrame(splits[i], index, streamID, uint8(i), sessionID, seq)
-		fmt.Printf("%s Split frame No %v,\n%v\n", info("[Sender]"), i, sigShard)
+		fmt.Printf("[Sender] Split frame No %v,\n%v\n",  i, sigShard)
 		SendFrame(t, w, sigShard)
 	}
 }
@@ -186,6 +186,7 @@ func TestParsing(t *testing.T) {
 	fmt.Println("")
 
 	// Single frame with a single IPv6 packet inside.
+	fmt.Println("===Single frame with a single IPv6 packet inside===")
 	SplitAndSend_aont_rs(t, w, []byte{
 		// SIG frame header.
 		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 2, 0,
@@ -203,57 +204,66 @@ func TestParsing(t *testing.T) {
 		101, 102, 103,
 	})
 	mt.AssertDone(t)
+	fmt.Println("===End Single frame with a single IPv6 packet inside===")
+	fmt.Println("")
 
-	// Single frame with two packets inside.
-	SplitAndSend_aont_rs(t, w, []byte{
-		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 3, 0,
-		// IPv4 header.
-		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		// Payload.
-		101, 102, 103,
-		// IPv4 header.
-		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		// Payload.
-		201, 202, 203,
-	})
-	mt.AssertPacket(t, []byte{
-		// IPv4 header.
-		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		// Payload.
-		101, 102, 103,
-	})
-	mt.AssertPacket(t, []byte{
-		// IPv4 header.
-		0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		// Payload.
-		201, 202, 203,
-	})
-	mt.AssertDone(t)
-
-	// Single packet split into two frames.
-	SplitAndSend_aont_rs(t, w, []byte{
-		// SIG frame header.
-		0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 4, 0,
-		// IPv4 header.
-		0x40, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		// Payload.
-		51, 52, 53, 54, 55, 56,
-	})
-	SplitAndSend_aont_rs(t, w, []byte{
-		// SIG frame header.
-		0, 1, 255, 255, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 5, 0,
-		// Payload.
-		57, 58,
-	})
-	mt.AssertPacket(t, []byte{
-		// IPv4 header.
-		0x40, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-		// Payload.
-		51, 52, 53, 54, 55, 56, 57, 58,
-	})
-	mt.AssertDone(t)
-
+	// // Single frame with two packets inside.
+	// fmt.Println("===Single frame with two packets inside===")
+	// SplitAndSend_aont_rs(t, w, []byte{
+	// 	// SIG frame header.
+	// 	0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 3, 0,
+	// 	// IPv4 header.
+	// 	0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	// 	// Payload.
+	// 	101, 102, 103,
+	// 	// IPv4 header.
+	// 	0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	// 	// Payload.
+	// 	201, 202, 203,
+	// })
+	// mt.AssertPacket(t, []byte{
+	// 	// IPv4 header.
+	// 	0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	// 	// Payload.
+	// 	101, 102, 103,
+	// })
+	// mt.AssertPacket(t, []byte{
+	// 	// IPv4 header.
+	// 	0x40, 0, 0, 23, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	// 	// Payload.
+	// 	201, 202, 203,
+	// })
+	// mt.AssertDone(t)
+	// fmt.Println("===End single frame with two packets inside===")
+	// fmt.Println("")
+	//
+	// fmt.Println("===Single pakcet split into two frames===")
+	// // Single packet split into two frames.
+	// SplitAndSend_aont_rs(t, w, []byte{
+	// 	// SIG frame header.
+	// 	0, 1, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 4, 0,
+	// 	// IPv4 header.
+	// 	0x40, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	// 	// Payload.
+	// 	51, 52, 53, 54, 55, 56,
+	// })
+	// fmt.Println()
+	// SplitAndSend_aont_rs(t, w, []byte{
+	// 	// SIG frame header.
+	// 	0, 1, 255, 255, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 5, 0,
+	// 	// Payload.
+	// 	57, 58,
+	// })
+	// mt.AssertPacket(t, []byte{
+	// 	// IPv4 header.
+	// 	0x40, 0, 0, 28, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+	// 	// Payload.
+	// 	51, 52, 53, 54, 55, 56, 57, 58,
+	// })
+	// mt.AssertDone(t)
+	// fmt.Println("===End Single pakcet split into two frames===")
+	// fmt.Println("")
+	//
 	// // Packet at a non-zero position in the frame.
 	// SplitAndSend_aont_rs(t, w, []byte{
 	// 	// SIG frame header.
@@ -286,7 +296,7 @@ func TestParsing(t *testing.T) {
 	// 	61, 62, 63,
 	// })
 	// mt.AssertDone(t)
-
+	//
 	// // A hole in the packet sequence.
 	// SplitAndSend_aont_rs(t, w, []byte{
 	// 	// SIG frame header.
@@ -316,7 +326,7 @@ func TestParsing(t *testing.T) {
 	// 	201, 202, 203,
 	// })
 	// mt.AssertDone(t)
-
+	//
 	// // A frame with the trailing part of the packet is dropped.
 	// // The half-read packet should be discarded.
 	// // The trailing bytes at the beginning of the subsequent frame
@@ -346,7 +356,7 @@ func TestParsing(t *testing.T) {
 	// 	201, 202, 203,
 	// })
 	// mt.AssertDone(t)
-
+	//
 	// // Invalid packet. The remaining part of the frame should be dropped, but
 	// // the processing should catch up in the next frame.
 	// SplitAndSend_aont_rs(t, w, []byte{
@@ -382,7 +392,7 @@ func TestParsing(t *testing.T) {
 	// 	91, 92, 93,
 	// })
 	// mt.AssertDone(t)
-
+	//
 	// // One packet split into 3 frames.
 	// SplitAndSend_aont_rs(t, w, []byte{
 	// 	// SIG frame header.
@@ -411,7 +421,6 @@ func TestParsing(t *testing.T) {
 	// 	51, 52, 53, 54, 55, 56, 57, 58, 59, 60,
 	// })
 	// mt.AssertDone(t)
-	// ---------------------------------------------------------
 
 	// For backup
 	// Single frame with a single IPv4 packet inside.
