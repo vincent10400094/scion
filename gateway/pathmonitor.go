@@ -29,6 +29,7 @@ type PathMonitor struct {
 	*pathhealth.Monitor
 	revStore              pathhealth.RevocationStore
 	sessionPathsAvailable metrics.Gauge
+	NumberOfPathsN        int
 }
 
 func (pm *PathMonitor) Register(
@@ -40,7 +41,7 @@ func (pm *PathMonitor) Register(
 
 	reg := pm.Monitor.Register(remote, &pathhealth.FilteringPathSelector{
 		PathPolicy:      policies.PathPolicy,
-		PathCount:       policies.PathCount,
+		PathCount:       pm.NumberOfPathsN,
 		RevocationStore: pm.revStore,
 	})
 	return &registration{

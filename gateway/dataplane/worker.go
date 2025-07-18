@@ -50,10 +50,11 @@ type worker struct {
 	rlists           map[int]*reassemblyList
 	markedForCleanup bool
 	tunIO            io.WriteCloser
+	decoder          *Decoder
 }
 
-func newWorker(remote *snet.UDPAddr, sessID uint8,
-	tunIO io.WriteCloser, metrics IngressMetrics) *worker {
+func newWorker(remote *snet.UDPAddr, sessID uint8, numberOfPathsT int,
+	tunIO io.WriteCloser, metrics IngressMetrics, aesKey string) *worker {
 
 	worker := &worker{
 		Remote:  remote,
@@ -62,6 +63,7 @@ func newWorker(remote *snet.UDPAddr, sessID uint8,
 		rlists:  make(map[int]*reassemblyList),
 		tunIO:   tunIO,
 		Metrics: metrics,
+		decoder: newDecoder(numberOfPathsT, aesKey),
 	}
 
 	return worker
@@ -85,7 +87,7 @@ func (w *worker) Run(ctx context.Context) {
 			break
 		}
 		for i := 0; i < n; i++ {
-			frame := frames[i].(*frameBuf)
+			frame := frames[i].(*shareBuf)
 			w.processFrame(ctx, frame)
 			frames[i] = nil
 		}
@@ -100,22 +102,30 @@ func (w *worker) Run(ctx context.Context) {
 // processFrame processes a SIG frame by first writing all completely contained
 // packets to the wire and then adding the frame to the corresponding reassembly
 // list if needed.
-func (w *worker) processFrame(ctx context.Context, frame *frameBuf) {
-	index := int(binary.BigEndian.Uint16(frame.raw[2:4]))
+func (w *worker) processFrame(ctx context.Context, frame *shareBuf) {
 	epoch := int(binary.BigEndian.Uint32(frame.raw[4:8]) & 0xfffff)
 	seqNr := binary.BigEndian.Uint64(frame.raw[8:16])
 	frame.seqNr = seqNr
-	frame.index = index
-	frame.snd = w
+
+	// Add frame to a decoder structure
+	decodedFrame := w.decoder.Insert(ctx, frame)
+	// Check if decoder was successful
+	if decodedFrame == nil {
+		return
+	}
+	// build frame
+	index := int(binary.BigEndian.Uint16(decodedFrame.raw[2:4]))
+	decodedFrame.index = index
 	// If index == 0 then we can be sure that there is no fragment at the beginning
 	// of the frame.
-	frame.fragNProcessed = index == 0
+	decodedFrame.fragNProcessed = index == 0
 	// If index == 0xffff then we can be sure that there are no complete packets in this
 	// frame.
-	frame.completePktsProcessed = index == 0xffff
+	decodedFrame.completePktsProcessed = index == 0xffff
+	decodedFrame.snd = w
 	// Add to frame buf reassembly list.
 	rlist := w.getRlist(epoch)
-	rlist.Insert(ctx, frame)
+	rlist.Insert(ctx, decodedFrame)
 }
 
 func (w *worker) getRlist(epoch int) *reassemblyList {

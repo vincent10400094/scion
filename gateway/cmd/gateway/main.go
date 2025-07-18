@@ -154,6 +154,9 @@ func realMain(ctx context.Context) error {
 		HTTPEndpoints:            httpPages,
 		HTTPServeMux:             http.DefaultServeMux,
 		Metrics:                  gateway.NewMetrics(localIA),
+		NumberOfPathsN:           globalCfg.Tunnel.NumberOfPathsN,
+		NumberOfPathsT:           globalCfg.Tunnel.NumberOfPathsT,
+		AESKey:                   globalCfg.Tunnel.AESKey,
 	}
 
 	g.Go(func() error {

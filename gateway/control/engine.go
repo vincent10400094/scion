@@ -98,7 +98,9 @@ type Engine struct {
 	// probeConns are local connections used to send probes.
 	probeConns []net.PacketConn
 
-	workerBase worker.Base
+	workerBase     worker.Base
+	NumberOfPathsN int
+	NumberOfPathsT int
 }
 
 // Run sets up the gateway engine and starts all necessary goroutines.

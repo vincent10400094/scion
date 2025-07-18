@@ -139,7 +139,10 @@ type Tunnel struct {
 	// SrcIPv4 is the source address to put into the routing table.
 	SrcIPv4 net.IP `toml:"src_ipv4,omitempty"`
 	// SrcIPv6 is the source address to put into the routing table.
-	SrcIPv6 net.IP `toml:"src_ipv6,omitempty"`
+	SrcIPv6        net.IP `toml:"src_ipv6,omitempty"`
+	NumberOfPathsT int    `toml:"number_of_paths_t,omitempty"`
+	NumberOfPathsN int    `toml:"number_of_paths_n,omitempty"`
+	AESKey         string `toml:"aes_key,omitempty"`
 }
 
 func (cfg *Tunnel) Validate() error {

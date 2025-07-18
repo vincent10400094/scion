@@ -601,7 +601,7 @@ func (m *MockDataplaneSessionFactory) EXPECT() *MockDataplaneSessionFactoryMockR
 // New mocks base method.
 func (m *MockDataplaneSessionFactory) New(arg0 byte, arg1 int, arg2 addr.IA, arg3 net.Addr) control.DataplaneSession {
 	m.ctrl.T.Helper()
-	ret := m.ctrl.Call(m, "New", arg0, arg1, arg2, arg3)
+		ret := m.ctrl.Call(m, "New", arg0, arg1, arg2, arg3, 3, 3)
 	ret0, _ := ret[0].(control.DataplaneSession)
 	return ret0
 }

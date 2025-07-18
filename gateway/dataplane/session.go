@@ -15,19 +15,22 @@
 package dataplane
 
 import (
-	"encoding/binary"
 	"fmt"
 	"hash/crc64"
 	"net"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/gopacket"
-	"github.com/google/gopacket/layers"
 
+	"github.com/scionproto/scion/pkg/addr"
+	"github.com/scionproto/scion/pkg/log"
 	"github.com/scionproto/scion/pkg/metrics"
+	"github.com/scionproto/scion/pkg/slayers"
 	"github.com/scionproto/scion/pkg/snet"
+	snetpath "github.com/scionproto/scion/pkg/snet/path"
 )
 
 var (
@@ -59,37 +62,52 @@ type Session struct {
 	DataPlaneConn      net.PacketConn
 	PathStatsPublisher PathStatsPublisher
 	Metrics            SessionMetrics
-
-	mutex sync.Mutex
+	mutex              sync.Mutex
 	// senders is a list of currently used senders.
 	senders []*sender
+	// encoder is the encoder that transforms IP packets into SIG frames
+	encoder *encoder
+	// mtu is the minimal MTU of all paths
+	mtu            int
+	numberOfPathsT int
+	numberOfPathsN int
+}
+
+func NewSession(sessionId uint8, gatewayAddr net.UDPAddr,
+	dataPlaneConn net.PacketConn, pathStatsPublisher PathStatsPublisher,
+	metrics SessionMetrics, numberOfPathsT int, numberOfPathsN int, aesKey string) *Session {
+	sess := &Session{
+		SessionID:          sessionId,
+		GatewayAddr:        gatewayAddr,
+		DataPlaneConn:      dataPlaneConn,
+		PathStatsPublisher: pathStatsPublisher,
+		Metrics:            metrics,
+		numberOfPathsT:     numberOfPathsT,
+		numberOfPathsN:     numberOfPathsN,
+		encoder:            newEncoder(sessionId, NewStreamID(), aesKey),
+	}
+	go func() {
+		defer log.HandlePanic()
+		sess.run()
+	}()
+	return sess
 }
 
 // Close signals that the session should close up its internal Connections. Close returns as
 // soon as forwarding goroutines are signaled to shut down (never blocks).
 func (s *Session) Close() {
+	s.mutex.Lock()
 	for _, snd := range s.senders {
 		snd.Close()
 	}
+	s.encoder.Close()
+	s.mutex.Unlock()
 }
 
 // Write encodes the packet and sends it to the network.
 // The packet may be silently dropped.
 func (s *Session) Write(packet gopacket.Packet) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
-	if len(s.senders) == 0 {
-		return
-	}
-	if len(s.senders) == 1 {
-		s.senders[0].Write(packet.Data())
-		return
-	}
-	// Choose the path based on the packet's quintuple.
-	hash := crc64.Checksum(extractQuintuple(packet), crcTable)
-	index := hash % uint64(len(s.senders))
-	s.senders[index].Write(packet.Data())
+	s.encoder.Write(packet.Data())
 }
 
 func (s *Session) String() string {
@@ -165,6 +183,88 @@ func (s *Session) SetPaths(paths []snet.Path) error {
 			string(newSenders[y].pathFingerprint)) == -1
 	})
 	s.senders = newSenders
+
+	// Re-compute MTU after selecting the paths
+	lowestMtu := 65535
+	for _, path := range paths {
+
+		// MTU must account for the size of the SCION header.
+		localAddr := s.DataPlaneConn.LocalAddr().(*snet.UDPAddr)
+		addrLen := addr.IABytes*2 + len(localAddr.Host.IP) + len(s.GatewayAddr.IP)
+		scionPath, _ := path.Dataplane().(snetpath.SCION)
+		pathLen := len(scionPath.Raw)
+
+		pathMtu := int(path.Metadata().MTU) - slayers.CmnHdrLen - addrLen - pathLen - udpHdrLen
+		if pathMtu < lowestMtu {
+			lowestMtu = pathMtu
+		}
+	}
+
+	if lowestMtu != s.mtu {
+		s.mtu = lowestMtu
+	}
+
+	return nil
+}
+
+func (s *Session) run() {
+
+	fmt.Println("Session is running. T=", s.numberOfPathsT, "N=", s.numberOfPathsN)
+
+	for {
+
+		startTime := time.Now()
+		for len(s.senders) < s.numberOfPathsN || s.mtu == 0 {
+			if time.Since(startTime) > time.Second*5 {
+				panic("There less than T paths available after 5 second wait.")
+			}
+		}
+
+		// Get the SIG frame, then apply SSS to the content.
+		sigFrame := s.encoder.ReadEncryptedSIGFrame(s.mtu)
+		if sigFrame == nil {
+			// sender was closed and all the buffered frames were sent.
+			break
+		}
+
+		err := s.splitAndSend(sigFrame, s.numberOfPathsN, s.numberOfPathsT)
+		if err != nil {
+			panic(err)
+		}
+
+	}
+}
+
+func (s *Session) splitAndSend(frame []byte, N, T int) error {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
+	if T > N || N > 255 || T < 1 || N < 1 || len(s.senders) < N {
+		panic("Invalid N or T")
+	}
+
+	// split the frame into N shares
+	shares, err := Split(frame[hdrLen:], N, T)
+	if err != nil {
+		return err
+	}
+
+	// create N encrypted frames
+	encryptedFrames := make([][]byte, N)
+	for i := 0; i < N; i++ {
+		encryptedFrames[i] = make([]byte, hdrLen+len(shares[i]))
+		// copy over the header from the unencrypted frame
+		copy(encryptedFrames[i], frame[:hdrLen])
+		// update the last byte of the sequence number to be the path ID
+		encryptedFrames[i][seqPos+7] = byte(i)
+		// copy over the share
+		copy(encryptedFrames[i][hdrLen:], shares[i])
+	}
+
+	// write the encrypted frames to the respective senders
+	for pathID, sender := range s.senders {
+		sender.Write(encryptedFrames[pathID])
+	}
+
 	return nil
 }
 
@@ -188,40 +288,4 @@ func pathsEqual(x, y snet.Path) bool {
 		x.Metadata() != nil && y.Metadata() != nil &&
 		x.Metadata().MTU == y.Metadata().MTU &&
 		x.Metadata().Expiry.Equal(y.Metadata().Expiry)
-}
-
-func extractQuintuple(packet gopacket.Packet) []byte {
-	// Protocol number and addresses.
-	var proto layers.IPProtocol
-	var q []byte
-	switch ip := packet.NetworkLayer().(type) {
-	case *layers.IPv4:
-		q = []byte{byte(ip.Protocol)}
-		q = append(q, ip.SrcIP...)
-		q = append(q, ip.DstIP...)
-		proto = ip.Protocol
-	case *layers.IPv6:
-		q = []byte{byte(ip.NextHeader)}
-		q = append(q, ip.SrcIP...)
-		q = append(q, ip.DstIP...)
-		proto = ip.NextHeader
-	default:
-		panic(fmt.Sprintf("unexpected network layer %T", packet.NetworkLayer()))
-	}
-	// Ports.
-	switch proto {
-	case layers.IPProtocolTCP:
-		pos := len(q)
-		q = append(q, 0, 0, 0, 0)
-		tcp := packet.Layer(layers.LayerTypeTCP).(*layers.TCP)
-		binary.BigEndian.PutUint16(q[pos:pos+2], uint16(tcp.SrcPort))
-		binary.BigEndian.PutUint16(q[pos+2:pos+4], uint16(tcp.DstPort))
-	case layers.IPProtocolUDP:
-		pos := len(q)
-		q = append(q, 0, 0, 0, 0)
-		udp := packet.Layer(layers.LayerTypeUDP).(*layers.UDP)
-		binary.BigEndian.PutUint16(q[pos:pos+2], uint16(udp.SrcPort))
-		binary.BigEndian.PutUint16(q[pos+2:pos+4], uint16(udp.DstPort))
-	}
-	return q
 }

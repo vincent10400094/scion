@@ -64,6 +64,9 @@ type DataplaneSessionFactory struct {
 	PacketConnFactory  PacketConnFactory
 	PathStatsPublisher dataplane.PathStatsPublisher
 	Metrics            dataplane.SessionMetrics
+	NumberOfPathsN     int
+	NumberOfPathsT     int
+	AESKey             string
 }
 
 func (dpf DataplaneSessionFactory) New(id uint8, policyID int,
@@ -81,13 +84,16 @@ func (dpf DataplaneSessionFactory) New(id uint8, policyID int,
 		FramesSent:         metrics.CounterWith(dpf.Metrics.FramesSent, labels...),
 		SendExternalErrors: dpf.Metrics.SendExternalErrors,
 	}
-	sess := &dataplane.Session{
-		SessionID:          id,
-		GatewayAddr:        *remoteAddr.(*net.UDPAddr),
-		DataPlaneConn:      conn,
-		PathStatsPublisher: dpf.PathStatsPublisher,
-		Metrics:            metrics,
-	}
+	sess := dataplane.NewSession(
+		id,
+		*remoteAddr.(*net.UDPAddr),
+		conn,
+		dpf.PathStatsPublisher,
+		metrics,
+		dpf.NumberOfPathsT,
+		dpf.NumberOfPathsN,
+		dpf.AESKey,
+	)
 	return sess
 }
 
@@ -193,6 +199,10 @@ type Gateway struct {
 
 	// Metrics are the metrics exported by the gateway.
 	Metrics *Metrics
+
+	NumberOfPathsN int
+	NumberOfPathsT int
+	AESKey         string
 }
 
 func (g *Gateway) Run(ctx context.Context) error {
@@ -310,6 +320,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 		},
 		revStore:              revStore,
 		sessionPathsAvailable: sessionPathsAvailable,
+		NumberOfPathsN:        g.NumberOfPathsN,
 	}
 
 	// *************************************************************************
@@ -585,7 +596,7 @@ func (g *Gateway) Run(ctx context.Context) error {
 
 	// Start dataplane ingress
 	if err := StartIngress(ctx, scionNetwork, g.DataServerAddr, deviceManager,
-		g.Metrics); err != nil {
+		g.Metrics, g.NumberOfPathsT, g.AESKey); err != nil {
 
 		return err
 	}
@@ -635,7 +646,10 @@ func (g *Gateway) Run(ctx context.Context) error {
 					Network: scionNetwork,
 					Addr:    &net.UDPAddr{IP: g.DataClientIP},
 				},
-				Metrics: CreateSessionMetrics(g.Metrics),
+				Metrics:        CreateSessionMetrics(g.Metrics),
+				NumberOfPathsN: g.NumberOfPathsN,
+				NumberOfPathsT: g.NumberOfPathsT,
+				AESKey:         g.AESKey,
 			},
 			Metrics: CreateEngineMetrics(g.Metrics),
 		},
@@ -760,7 +774,7 @@ func CreateIngressMetrics(m *Metrics) dataplane.IngressMetrics {
 }
 
 func StartIngress(ctx context.Context, scionNetwork *snet.SCIONNetwork, dataAddr *net.UDPAddr,
-	deviceManager control.DeviceManager, metrics *Metrics) error {
+	deviceManager control.DeviceManager, metrics *Metrics, numberOfPathsT int, aesKey string) error {
 
 	logger := log.FromCtx(ctx)
 	dataplaneServerConn, err := scionNetwork.Listen(
@@ -773,9 +787,11 @@ func StartIngress(ctx context.Context, scionNetwork *snet.SCIONNetwork, dataAddr
 	}
 	ingressMetrics := CreateIngressMetrics(metrics)
 	ingressServer := &dataplane.IngressServer{
-		Conn:          dataplaneServerConn,
-		DeviceManager: deviceManager,
-		Metrics:       ingressMetrics,
+		Conn:           dataplaneServerConn,
+		DeviceManager:  deviceManager,
+		Metrics:        ingressMetrics,
+		NumberOfPathsT: numberOfPathsT,
+		AESKey:         aesKey,
 	}
 	go func() {
 		defer log.HandlePanic()
